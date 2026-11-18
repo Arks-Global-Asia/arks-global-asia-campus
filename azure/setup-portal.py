@@ -87,8 +87,8 @@ try:
     announce('Saving application credentials in the existing Key Vault; no values will be displayed.')
     for name,value in [('arks-portal-entra-secret',entra_secret),('arks-portal-pg-password',portal_password)]:secret(name,value)
     announce('Creating/reusing '+database+' on your existing PostgreSQL server. No new database server is created.')
-    existing_db=az('postgres','flexible-server','db','show','--database-name',database,'--server-name',pg_name,'--resource-group',pg_rg,optional=True)
-    if not existing_db:az('postgres','flexible-server','db','create','--database-name',database,'--server-name',pg_name,'--resource-group',pg_rg)
+    existing_db=az('postgres','flexible-server','db','show','--name',database,'--server-name',pg_name,'--resource-group',pg_rg,optional=True)
+    if not existing_db:az('postgres','flexible-server','db','create','--name',database,'--server-name',pg_name,'--resource-group',pg_rg)
     # Public managed Functions need a reachable TLS database endpoint; PostgreSQL
     # login and the dedicated schema permissions remain mandatory.
     if postgres.get('network',{}).get('publicNetworkAccess')=='Disabled':raise RuntimeError('This PostgreSQL server is private-network only. A Free managed API cannot reach it without a different backend/network topology. No public-access change was made.')

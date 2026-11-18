@@ -1,18 +1,25 @@
 {
-  "release": "1.0",
+  "release": "1.1",
   "date_ist": "2026-11-18",
   "source_baseline": "abe90e51e9ec39cb8e4e73cc7b11d7cef8c5f34c",
-  "javascript_checks": 26,
-  "python_checks": 19,
+  "javascript_checks": 36,
+  "python_checks": 20,
   "build": "passed",
   "pdfs_in_repository": false,
-  "azure_portal_migration": "pending",
-  "entra_callback_implementation": "pending",
+  "azure_portal_migration": "runtime_implemented_cloud_activation_and_existing_data_transfer_required",
+  "entra_callback_implementation": "implemented_with_PKCE_signed_token_validation_and_enrollment_checks",
   "repository": "https://github.com/Arks-Global-Asia/arks-global-asia-campus",
   "github_upload": "verified_import",
   "review_fixes": [
-    "unsupported authentication modes fail closed",
-    "Azure setup and timer activation use 03:00 and 10:00 IST"
+    "Removed ChatGPT fallback and non-JSON parser failure",
+    "Deploy managed Azure API with frontend",
+    "Central PostgreSQL profiles and batch enrollments",
+    "Entra state/nonce/PKCE and signed identity validation",
+    "Private Azure Blob file adapter",
+    "Explicit setup and automation cutover scripts"
   ],
-  "production_dependency_audit": "0 known vulnerabilities reported"
+  "production_dependency_audit": "0 known vulnerabilities reported",
+  "postgres_integration_checks": 36,
+  "central_user_database": "arks_global_institutes",
+  "postgres_host": "pg-arksglobal-asia.postgres.database.azure.com"
 }

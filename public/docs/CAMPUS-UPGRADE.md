@@ -1,3 +1,5 @@
+> Azure release 1.1: Entra code flow and the PostgreSQL/Blob managed API are now implemented. For the current activation steps, use the repository's `azure/PORTAL-SETUP.md`. The application uses `arks_global_institutes` on the existing Azure PostgreSQL server. Earlier statements below about Entra implementation being pending describe the previous release. Cloud secrets, existing data transfer and live account validation remain operational steps.
+
 # Arks Global Asia Institutes — campus upgrade
 
 ## What is implemented

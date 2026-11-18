@@ -1,3 +1,4 @@
+import { readApiResponse } from "../shared/http.js";
 import React, { useEffect, useState } from "react";
 import {
   ArrowRight,
@@ -24,9 +25,7 @@ async function request(path, body) {
         }
       : {},
   );
-  const d = await r.json();
-  if (!r.ok) throw new Error(d.error);
-  return d;
+  return readApiResponse(r);
 }
 const when = (s) =>
   s

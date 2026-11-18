@@ -353,3 +353,5 @@ export const engineJobs = sqliteTable(
       .where(sql`status IN ('pending','running')`),
   ],
 );
+
+export const authIdentities=sqliteTable('auth_identities',{id:text('id').primaryKey(),issuer:text('issuer').notNull(),subject:text('subject').notNull(),user_id:text('user_id').notNull().references(()=>users.id)});

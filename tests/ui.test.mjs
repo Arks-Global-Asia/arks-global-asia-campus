@@ -22,18 +22,25 @@ test("student and administrator DOM workflows render and assessment interaction 
   });
   const env = { DB: await database(), BUCKET: memoryBucket() };
   const originalFetch = globalThis.fetch;
+  const pendingRequests = new Set();
   globalThis.fetch = async (path, options = {}) => {
     const headers = new Headers(options.headers);
     headers.set("oai-authenticated-user-id", "owner");
     headers.set("oai-authenticated-user-email", "owner@arks.test");
     headers.set("oai-authenticated-user-full-name", "Campus Owner");
-    return api(
-      new Request(new URL(path, "https://campus.test"), {
-        ...options,
-        headers,
-      }),
-      env,
-    );
+    const marker = {};
+    pendingRequests.add(marker);
+    try {
+      return await api(
+        new Request(new URL(path, "https://campus.test"), {
+          ...options,
+          headers,
+        }),
+        env,
+      );
+    } finally {
+      pendingRequests.delete(marker);
+    }
   };
   await fs.mkdir(".local", { recursive: true });
   await build({
@@ -49,8 +56,20 @@ test("student and administrator DOM workflows render and assessment interaction 
   async function settle(fn = () => {}) {
     await act(async () => {
       await fn();
-      await new Promise((r) => setTimeout(r, 35));
+      await new Promise((r) => setTimeout(r, 20));
     });
+    let idle = 0;
+    for (let i = 0; i < 500 && idle < 2; i++) {
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 10));
+      });
+      idle = pendingRequests.size ? 0 : idle + 1;
+    }
+    assert.equal(
+      pendingRequests.size,
+      0,
+      "UI requests should settle before assertions",
+    );
   }
   try {
     await settle(() => import("../.local/ui-test.mjs?test=" + Date.now()));

@@ -7,7 +7,15 @@ import time
 from collections import deque
 import requests
 
-ORIGIN = "https://arks-global-asia-institutes.majesticanchovy2.chatgpt.site"
+def portal_origin():
+    from urllib.parse import urlparse
+    value = (os.environ.get('ARKS_PORTAL_ORIGIN') or 'https://arks-global-asia-institutes.majesticanchovy2.chatgpt.site').rstrip('/')
+    parsed = urlparse(value)
+    if parsed.scheme != 'https' or parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment or parsed.port not in (None,443) or not parsed.hostname or not parsed.hostname.endswith(('.azurestaticapps.net', '.arksglobalasia.cloud', '.chatgpt.site')):
+        raise RuntimeError('Invalid configured portal origin; refusing credential forwarding.')
+    return value
+
+ORIGIN = portal_origin()
 DRIVE = "https://www.googleapis.com/drive/v3/files"
 FOLDER = "application/vnd.google-apps.folder"
 SHORTCUT = "application/vnd.google-apps.shortcut"

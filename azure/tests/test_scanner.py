@@ -147,6 +147,14 @@ class ScannerTests(unittest.TestCase):
         with patch.dict(os.environ, {'ARKS_HOST_TOKEN': 'test', 'ARKS_IMPORTER_TOKEN': 'test'}):
             with self.assertRaises(ScanError): Portal().call('review', {})
 
+    def test_portal_origin_accepts_the_azure_campus_and_refuses_other_hosts(self):
+        from scanner import portal_origin
+        with patch.dict(os.environ, {'ARKS_PORTAL_ORIGIN':'https://black-water-04f865700.5.azurestaticapps.net'}):
+            self.assertEqual(portal_origin(),'https://black-water-04f865700.5.azurestaticapps.net')
+        for value in ['http://studentportal.arksglobalasia.cloud','https://example.org','https://studentportal.arksglobalasia.cloud/path','https://studentportal.arksglobalasia.cloud:444']:
+            with patch.dict(os.environ, {'ARKS_PORTAL_ORIGIN':value}):
+                with self.assertRaises(RuntimeError):portal_origin()
+
     def test_function_bindings_are_indexable(self):
         from function_app import app
         functions = app.get_functions()

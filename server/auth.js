@@ -1,3 +1,4 @@
+import { entraReady, entraRoutes } from "./entra.js";
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import { one, rows, run, uid, now, fail, json, hash, admin } from "./common.js";
 const jwks = createRemoteJWKSet(
@@ -5,7 +6,7 @@ const jwks = createRemoteJWKSet(
 );
 const cookie = (value, age = 28800) =>
   `arks_session=${value}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${age}`;
-const getCookie = (r, name) =>
+export const getCookie = (r, name) =>
   r.headers
     .get("cookie")
     ?.split(";")
@@ -37,7 +38,7 @@ async function passwordHash(password, salt) {
     .map((x) => x.toString(16).padStart(2, "0"))
     .join("");
 }
-async function session(db, user) {
+export async function session(db, user) {
   const raw = uid() + uid();
   await run(
     db,
@@ -67,7 +68,12 @@ export async function authRoutes(req, env) {
     return json({
       google_ready: !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET),
       mode: env.AUTH_MODE || "sites",
+      entra_ready: entraReady(env),
+      portal_ready: env.PORTAL_READY !== false,
     });
+  if (env.AUTH_MODE === "entra" && p.startsWith("/api/auth/google/"))
+    fail(404, "Use institute sign-in for this campus.");
+  if (p.startsWith("/api/auth/entra/")) return entraRoutes(req, env);
   if (p === "/api/auth/logout" && req.method === "POST") {
     const t = getCookie(req, "arks_session");
     if (t) await run(db, "DELETE FROM auth_sessions WHERE id=?", await hash(t));

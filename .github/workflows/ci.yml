@@ -17,6 +17,8 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
+      - run: npm run azure:verify
+      - run: npm ci --omit=dev --prefix api
   azure-worker:
     runs-on: ubuntu-latest
     steps:
@@ -26,3 +28,33 @@ jobs:
           python-version: '3.12'
       - run: pip install -r azure/function/requirements.txt
       - run: python -m unittest discover -s azure/tests -v
+  postgres-integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci_only_disposable_postgres
+          POSTGRES_DB: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Prepare isolated test configuration
+        run: |
+          mkdir -p .local
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          fs.writeFileSync('.local/pg-ci.json',JSON.stringify({PORTAL_PG_HOST:'127.0.0.1',PORTAL_PG_PORT:'5432',PORTAL_PG_DATABASE:'postgres',PORTAL_PG_USER:'postgres',PORTAL_PG_PASSWORD:'ci_only_disposable_postgres',PORTAL_PG_ALLOW_LOCAL:'true'}));
+          JS
+      - run: npm test
+        env:
+          ARKS_TEST_PG_CONFIG: ${{ github.workspace }}/.local/pg-ci.json

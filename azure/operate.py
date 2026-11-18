@@ -72,12 +72,17 @@ def portal_headers():
 
 
 def main():
-    global cfg
+    global cfg, ORIGIN
     os.chdir(Path(__file__).resolve().parent)
     step('read local configuration')
     if not Path('azure-config.json').is_file():
         raise RuntimeError('azure-config.json is missing beside operate.py. Restore that file from your download.')
     cfg = json.loads(Path('azure-config.json').read_text())
+    ORIGIN = cfg.get('PORTAL_ORIGIN', ORIGIN).rstrip('/')
+    from urllib.parse import urlparse
+    parsed = urlparse(ORIGIN)
+    if parsed.scheme != 'https' or parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment or parsed.port not in (None,443) or not parsed.hostname or not parsed.hostname.endswith(('.azurestaticapps.net', '.arksglobalasia.cloud', '.chatgpt.site')):
+        raise RuntimeError('Invalid portal origin; refusing credential forwarding.')
     missing = [key for key in ('SUBSCRIPTION_ID', 'RG', 'APP', 'VAULT') if not cfg.get(key)]
     if missing:
         raise RuntimeError('azure-config.json is missing fields: ' + ', '.join(missing))

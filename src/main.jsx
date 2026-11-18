@@ -1,3 +1,4 @@
+import { readApiResponse } from "../shared/http.js";
 import { QuestionInput, MixedQuestionBuilder } from "./QuestionControls.jsx";
 import {
   QUESTION_TYPES,
@@ -104,13 +105,7 @@ async function api(path, body) {
           }
         : {},
   );
-  const d = await r.json();
-  if (!r.ok) {
-    const e = new Error(d.error || "Something went wrong.");
-    e.status = r.status;
-    throw e;
-  }
-  return d;
+  return readApiResponse(r);
 }
 const date = (s) =>
   s
@@ -313,13 +308,6 @@ function App() {
         {error ? (
           <>
             <p>{error}</p>
-            <a
-              className="button"
-              href="/signin-with-chatgpt?return_to=%2F"
-              target="_top"
-            >
-              Sign in to your campus
-            </a>
             <button onClick={init}>Retry</button>
           </>
         ) : (

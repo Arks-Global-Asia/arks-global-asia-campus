@@ -102,11 +102,12 @@ async function visibleContent(db, u, cid, batch) {
   return c;
 }
 async function identity(req, db, env) {
-  if (!["sites", "google"].includes(env.AUTH_MODE || "sites"))
+  if (!["sites", "google", "entra"].includes(env.AUTH_MODE || "sites"))
     fail(503, "Authentication mode is not supported by this deployment.");
   const signedIn = await sessionUser(req, env);
   if (signedIn) return signedIn;
-  if (env.AUTH_MODE === "google") fail(401, "Sign in to access your campus.");
+  if (["google", "entra"].includes(env.AUTH_MODE))
+    fail(401, "Sign in to access your campus.");
   const uid = req.headers.get("oai-authenticated-user-id"),
     email = req.headers.get("oai-authenticated-user-email")?.toLowerCase();
   if (!uid || !email) fail(401, "Sign in to access your campus.");

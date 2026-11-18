@@ -1,6 +1,14 @@
+if (process.env.ARKS_TEST_PG_CONFIG) {
+  const { afterEach } = await import("node:test");
+  afterEach(async () => {
+    await (await import("../azure/portal/test-database.js")).cleanupPgTests();
+  });
+}
 import initSqlJs from "sql.js";
 import fs from "node:fs/promises";
 export async function database(filename) {
+  if (process.env.ARKS_TEST_PG_CONFIG)
+    return (await import("../azure/portal/test-database.js")).pgTestDatabase();
   const SQL = await initSqlJs();
   let bytes;
   try {

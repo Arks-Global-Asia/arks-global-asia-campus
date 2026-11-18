@@ -430,7 +430,7 @@ test("objective formats validate permutations and normalize fractional weights w
 
 test("an unsupported auth mode cannot fall back to trusted Sites headers", async () => {
   const { env, call } = await fixture();
-  env.AUTH_MODE = "entra";
+  env.AUTH_MODE = "unsupported-provider";
   assert.equal((await call("bootstrap")).status, 503);
   assert.equal((await call("admin/data")).status, 503);
 });

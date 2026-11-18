@@ -1,3 +1,4 @@
+import { readApiResponse } from "../shared/http.js";
 import { QUESTION_TYPES } from "../shared/assessment.js";
 import React, { useEffect, useState } from "react";
 export async function request(path, body) {
@@ -11,9 +12,7 @@ export async function request(path, body) {
         }
       : {},
   );
-  const d = await r.json();
-  if (!r.ok) throw new Error(d.error || "Request failed.");
-  return d;
+  return readApiResponse(r);
 }
 function Field({ label, children, ...props }) {
   return (
@@ -41,9 +40,16 @@ export function Login({ onLogin }) {
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
   useEffect(() => {
+    const authError = new URLSearchParams(window.location.search).get(
+      "auth_error",
+    );
+    if (authError) {
+      setError(authError);
+      window.history.replaceState(null, "", window.location.pathname);
+    }
     request("auth/config")
       .then(setConfig)
-      .catch(() => {});
+      .catch((e) => setError(e.message));
   }, []);
   return (
     <main className="login-page">
@@ -55,13 +61,24 @@ export function Login({ onLogin }) {
         />
         <h1>Your learning starts here.</h1>
         <p>Students: use the Google account enrolled by your institute.</p>
-        {config.google_ready ? (
+        {config.entra_ready ? (
+          <a className="button" href="/api/auth/entra/start">
+            Continue with Google through your institute
+          </a>
+        ) : config.mode !== "entra" && config.google_ready ? (
           <a className="button" href="/api/auth/google/start">
             Continue with Google
           </a>
         ) : (
           <p className="info-strip">
-            Google sign-in is awaiting configuration by your administrator.
+            Your institute is completing sign-in setup. Please try again shortly
+            or contact support.
+          </p>
+        )}
+        {config.portal_ready === false && (
+          <p className="help-note">
+            The campus service is being configured. Your institute will confirm
+            when enrollment opens.
           </p>
         )}
         <hr />

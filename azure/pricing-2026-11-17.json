@@ -1,0 +1,83 @@
+{
+  "checked": "2026-11-17",
+  "source": "https://prices.azure.com/api/retail/prices?%24filter=serviceName+eq+%27Functions%27+and+armRegionName+eq+%27centralindia%27&currencyCode=INR",
+  "rates": [
+    {
+      "productName": "Flex Consumption",
+      "skuName": "On Demand",
+      "meterName": "On Demand Execution Time",
+      "retailPrice": 0.0,
+      "unitOfMeasure": "1 GB Second",
+      "tierMinimumUnits": 0.0,
+      "currencyCode": "INR",
+      "effectiveStartDate": "2025-06-01T00:00:00Z",
+      "armRegionName": "centralindia"
+    },
+    {
+      "productName": "Flex Consumption",
+      "skuName": "On Demand",
+      "meterName": "On Demand Execution Time",
+      "retailPrice": 0.0035,
+      "unitOfMeasure": "1 GB Second",
+      "tierMinimumUnits": 100000.0,
+      "currencyCode": "INR",
+      "effectiveStartDate": "2025-06-01T00:00:00Z",
+      "armRegionName": "centralindia"
+    },
+    {
+      "productName": "Flex Consumption",
+      "skuName": "Always Ready",
+      "meterName": "Always Ready Execution Time",
+      "retailPrice": 0.0018,
+      "unitOfMeasure": "1 GB Second",
+      "tierMinimumUnits": 0.0,
+      "currencyCode": "INR",
+      "effectiveStartDate": "2025-06-01T00:00:00Z",
+      "armRegionName": "centralindia"
+    },
+    {
+      "productName": "Flex Consumption",
+      "skuName": "On Demand",
+      "meterName": "On Demand Total Executions",
+      "retailPrice": 0.0,
+      "unitOfMeasure": "10",
+      "tierMinimumUnits": 0.0,
+      "currencyCode": "INR",
+      "effectiveStartDate": "2025-06-01T00:00:00Z",
+      "armRegionName": "centralindia"
+    },
+    {
+      "productName": "Flex Consumption",
+      "skuName": "On Demand",
+      "meterName": "On Demand Total Executions",
+      "retailPrice": 0.0004,
+      "unitOfMeasure": "10",
+      "tierMinimumUnits": 25000.0,
+      "currencyCode": "INR",
+      "effectiveStartDate": "2025-06-01T00:00:00Z",
+      "armRegionName": "centralindia"
+    },
+    {
+      "productName": "Flex Consumption",
+      "skuName": "Always Ready",
+      "meterName": "Always Ready Baseline",
+      "retailPrice": 0.0005,
+      "unitOfMeasure": "1 GB Second",
+      "tierMinimumUnits": 0.0,
+      "currencyCode": "INR",
+      "effectiveStartDate": "2025-06-01T00:00:00Z",
+      "armRegionName": "centralindia"
+    },
+    {
+      "productName": "Flex Consumption",
+      "skuName": "Always Ready",
+      "meterName": "Always Ready Total Executions",
+      "retailPrice": 0.0004,
+      "unitOfMeasure": "10",
+      "tierMinimumUnits": 0.0,
+      "currencyCode": "INR",
+      "effectiveStartDate": "2025-06-01T00:00:00Z",
+      "armRegionName": "centralindia"
+    }
+  ]
+}

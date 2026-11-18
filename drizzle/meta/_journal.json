@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1794746497502,
+      "tag": "0000_slimy_punisher",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1794798822948,
+      "tag": "0001_soft_giant_girl",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1794928227544,
+      "tag": "0002_sparkling_randall_flagg",
+      "breakpoints": true
+    }
+  ]
+}

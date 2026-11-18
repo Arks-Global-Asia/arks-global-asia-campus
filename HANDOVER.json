@@ -1,0 +1,18 @@
+{
+  "release": "1.0",
+  "date_ist": "2026-11-18",
+  "source_baseline": "abe90e51e9ec39cb8e4e73cc7b11d7cef8c5f34c",
+  "javascript_checks": 26,
+  "python_checks": 19,
+  "build": "passed",
+  "pdfs_in_repository": false,
+  "azure_portal_migration": "pending",
+  "entra_callback_implementation": "pending",
+  "repository": "https://github.com/Arks-Global-Asia/arks-global-asia-campus",
+  "github_upload": "verified_import",
+  "review_fixes": [
+    "unsupported authentication modes fail closed",
+    "Azure setup and timer activation use 03:00 and 10:00 IST"
+  ],
+  "production_dependency_audit": "0 known vulnerabilities reported"
+}

@@ -1,0 +1,8 @@
+azure-config.json
+google-config.json
+function.zip
+.venv/
+__pycache__/
+local.settings.json
+.locations.txt
+verification.json

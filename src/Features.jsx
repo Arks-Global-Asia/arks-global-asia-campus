@@ -984,7 +984,7 @@ function Studio({ batch, data, save, features, pending, edit }) {
   );
 }
 function Access({ batch, data, features, save, pending }) {
-  const [group, setGroup] = useState("");
+  const [group, setGroup] = useDraftState("selected-access-group", "");
   const g = features.groups.find((g) => g.id === group);
   return (
     <>
@@ -1002,6 +1002,7 @@ function Access({ batch, data, features, save, pending }) {
         </p>
       </section>
       <DraftForm
+        draftKey={"access-group:" + group}
         key={group}
         className="panel form"
         onSubmit={(e) => {

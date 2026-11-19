@@ -60,7 +60,7 @@ export default function AutomationPanel({ batches }) {
     [filter, setFilter] = useState("pending"),
     [batch, setBatch] = useState("all"),
     [selected, setSelected] = useState([]),
-    [releaseTopic, setReleaseTopic] = useState(""),
+    [releaseTopic, setReleaseTopic] = useDraftState("release-topic", ""),
     [source, setSource] = useState(null),
     [review, setReview] = useState(null),
     [busy, setBusy] = useState(false),

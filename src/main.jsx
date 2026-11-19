@@ -2234,24 +2234,26 @@ function App() {
             })}
           </nav>
           <div className="sidebar-bottom">
-            <div className="help-card">
-              <span className="help-dot" />
-              <h3>Big goals. Small steps.</h3>
-              <p>
-                We’re here for every part
-                <br />
-                of your learning journey.
-              </p>
-              <button
-                className="text-btn"
-                onClick={() => {
-                  setAdminMode(false);
-                  navigate("tickets");
-                }}
-              >
-                Let’s talk <ArrowUpRight size={14} />
-              </button>
-            </div>
+            {!adminMode && (
+              <div className="help-card">
+                <span className="help-dot" />
+                <h3>Big goals. Small steps.</h3>
+                <p>
+                  We’re here for every part
+                  <br />
+                  of your learning journey.
+                </p>
+                <button
+                  className="text-btn"
+                  onClick={() => {
+                    setAdminMode(false);
+                    navigate("tickets");
+                  }}
+                >
+                  Let’s talk <ArrowUpRight size={14} />
+                </button>
+              </div>
+            )}
             {boot.user.role === "admin" && (
               <button
                 className="mode-switch"

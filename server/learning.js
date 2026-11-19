@@ -401,7 +401,13 @@ export async function learningRoutes(req, env, u) {
               resources: resources
                 .filter(
                   (r) =>
-                    ids.includes(r.id) && titleKey(r.topic) === titleKey(topic),
+                    ids.includes(r.id) &&
+                    (titleKey(r.topic) === titleKey(topic) ||
+                      !resources.some(
+                        (source) =>
+                          ids.includes(source.id) &&
+                          titleKey(source.topic) === titleKey(topic),
+                      )),
                 )
                 .map((r) => ({
                   title: r.title,

@@ -88,7 +88,7 @@
   "server/common.js": "0185adbd3a9ad6e282c215e3ed1b3525dd92a7fcbd9d62f63004d582a6b1d668",
   "server/entra.js": "ef45c18dd33e4e43a36c87a317bd610f90c568f492407c2d85266a61457b051c",
   "server/features.js": "657d085d77c0f4e393410b41bf30666f79c1dbb4476f49fb8bd23fac78d7fe54",
-  "server/learning.js": "4767e70562604a19dd6b51f786a88f7af629c255d8fb49ef8a9e41f49bfbabe9",
+  "server/learning.js": "160294a53ac540e2c0de4f18713b4cb968f3a89902a767c2cad3449db230dabf",
   "server/seed.js": "e05bde5f5a68155b57147ad324f66387125950134561925207a2a0f0f52042b1",
   "server/worker.js": "bc6bdb6600c63048850afae373cce97f84d0f6f8da341febd9076bb54c53b4e2",
   "shared/assessment.js": "4c969044644edde1cf04e5f54ec5cd0548a9047922c415a8768ddd2b3fcea086",
@@ -105,7 +105,7 @@
   "tests/automation.test.mjs": "f6fe874022dd580b1949ede62016b3bd6a5a7a96b44d779d721e0efbd9e18f61",
   "tests/azure.test.mjs": "a1d58b789c17f7ba255ac81e19fb4a9b1b1b035e19535b5e9dd47ff110de52a9",
   "tests/features.test.mjs": "ce9827ddb77aa32d36041567d1f744b0c5a5892836459c439f438f8b6d55800e",
-  "tests/learning.test.mjs": "d6f49f5c15890ac9b9e02172d4f72a7ab3b0ba54200aaabcf46bd65065783048",
+  "tests/learning.test.mjs": "5cb3ae6fe62105006a067368f98925714256a87b122de91e8b5e281af290cdd0",
   "tests/ui.test.mjs": "bef9b785f45429f339a40136a3f92bfbe415249fd5405ff587c0debaf6b76291",
   "vite.config.js": "e594deedc789b8da8c8933b8e923ded539ff2e08b9aacc342628af365e1b768c"
 }

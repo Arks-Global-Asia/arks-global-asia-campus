@@ -195,6 +195,23 @@ test("automatic generation is durable and idempotent, publishes valid 100-mark t
     .first();
   assert.equal(saved.published, 1);
   assert.equal(saved.batch_id, "sandbox");
+  const started = await call("tests/start", {
+    batch_id: "sandbox",
+    test_id: saved.id,
+  });
+  assert.equal(started.status, 200);
+  const submitted = await call("tests/submit", {
+    attempt_id: started.data.id,
+    answers: [],
+  });
+  assert.equal(submitted.status, 200);
+  const insights = await call("performance?batch=sandbox");
+  assert.equal(insights.status, 200);
+  assert.ok(
+    insights.data.attempts[0].questions[0].resources.length > 0,
+    "A test must retain links to its approved class sources even when AI topic labels differ.",
+  );
+
   assert.equal(
     JSON.parse(saved.questions).reduce(
       (s, q) => s + Math.round(q.marks * 100),

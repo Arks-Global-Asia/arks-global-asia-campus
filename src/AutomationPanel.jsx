@@ -1,3 +1,4 @@
+import { DraftForm, useDraftState } from "./Drafts.jsx";
 import { readApiResponse } from "../shared/http.js";
 import React, { useEffect, useState } from "react";
 import {
@@ -58,6 +59,8 @@ export default function AutomationPanel({ batches }) {
     [tab, setTab] = useState("inbox"),
     [filter, setFilter] = useState("pending"),
     [batch, setBatch] = useState("all"),
+    [selected, setSelected] = useState([]),
+    [releaseTopic, setReleaseTopic] = useState(""),
     [source, setSource] = useState(null),
     [review, setReview] = useState(null),
     [busy, setBusy] = useState(false),
@@ -73,6 +76,8 @@ export default function AutomationPanel({ batches }) {
   }
   useEffect(() => {
     load();
+    const timer = setInterval(load, 10000);
+    return () => clearInterval(timer);
   }, []);
   async function action(fn, success) {
     setBusy(true);
@@ -112,6 +117,13 @@ export default function AutomationPanel({ batches }) {
   );
   return (
     <>
+      {!state.engine_ready && (
+        <div className="info-strip" role="status">
+          Azure worker is not connected. Sync requests stay queued until the
+          worker is connected to this portal. Connect it using
+          azure/connect-portal-worker.py; then use Sync Up.
+        </div>
+      )}
       <div className="page-heading">
         <div>
           <div className="eyebrow">YOUR TEACHING, WITH LESS BUSYWORK</div>
@@ -360,6 +372,69 @@ export default function AutomationPanel({ batches }) {
             </label>
             <span className="muted">{items.length} items · newest first</span>
           </div>
+          {filter === "pending" && items.length > 0 && (
+            <section className="panel release-toolbar">
+              <div className="row gap wrap">
+                <label className="checkbox-row">
+                  <input
+                    type="checkbox"
+                    checked={
+                      selected.length > 0 &&
+                      items
+                        .filter(
+                          (i) => i.kind !== "private" && i.kind !== "test_link",
+                        )
+                        .every((i) => selected.includes(i.id))
+                    }
+                    onChange={(e) =>
+                      setSelected(
+                        e.target.checked
+                          ? items
+                              .filter(
+                                (i) =>
+                                  i.kind !== "private" &&
+                                  i.kind !== "test_link",
+                              )
+                              .slice(0, 100)
+                              .map((i) => i.id)
+                          : [],
+                      )
+                    }
+                  />{" "}
+                  Select visible materials
+                </label>
+                <label>
+                  SOP topic (optional)
+                  <input
+                    value={releaseTopic}
+                    onChange={(e) => setReleaseTopic(e.target.value)}
+                    placeholder="Exact topic from your SOP, e.g. Git"
+                  />
+                </label>
+                <button
+                  className="button"
+                  disabled={busy || !selected.length}
+                  onClick={() =>
+                    action(async () => {
+                      const r = await request("bulk-review", {
+                        ids: selected,
+                        topic: releaseTopic || undefined,
+                        confirmed_student_safe: true,
+                      });
+                      setSelected([]);
+                      return r;
+                    }, "Released")
+                  }
+                >
+                  Approve & release selected ({selected.length})
+                </button>
+              </div>
+              <small>
+                Clicking approve confirms the selected materials are safe for
+                students. Instructor answers remain blocked.
+              </small>
+            </section>
+          )}
           {items.length ? (
             <div className="import-grid">
               {items.map((i) => (
@@ -368,6 +443,24 @@ export default function AutomationPanel({ batches }) {
                     <span className="badge blue">{label[i.kind]}</span>
                     <Badge value={i.status} />
                   </div>
+                  {i.status === "pending" &&
+                    i.kind !== "private" &&
+                    i.kind !== "test_link" && (
+                      <label className="checkbox-row">
+                        <input
+                          type="checkbox"
+                          checked={selected.includes(i.id)}
+                          onChange={(e) =>
+                            setSelected(
+                              e.target.checked
+                                ? [...selected, i.id]
+                                : selected.filter((id) => id !== i.id),
+                            )
+                          }
+                        />{" "}
+                        Select for release
+                      </label>
+                    )}
                   <h3>{i.title}</h3>
                   <p>
                     {i.batch_name} · {i.topic}
@@ -394,12 +487,34 @@ export default function AutomationPanel({ batches }) {
                     )}
                   </div>
                   {i.status === "pending" ? (
-                    <button
-                      className="button secondary"
-                      onClick={() => setReview(i)}
-                    >
-                      Review & release <ArrowRight size={15} />
-                    </button>
+                    <div className="row gap wrap">
+                      {i.kind !== "test_link" && (
+                        <button
+                          className="button"
+                          disabled={busy}
+                          onClick={() =>
+                            action(
+                              () =>
+                                request("review", {
+                                  id: i.id,
+                                  action: "approve",
+                                  confirmed_student_safe: true,
+                                  topic: releaseTopic || undefined,
+                                }),
+                              "Material released.",
+                            )
+                          }
+                        >
+                          Approve & release
+                        </button>
+                      )}
+                      <button
+                        className="button secondary"
+                        onClick={() => setReview(i)}
+                      >
+                        Review & edit <ArrowRight size={15} />
+                      </button>
+                    </div>
                   ) : (
                     <p className="help-note">
                       {i.status === "restricted"
@@ -532,10 +647,10 @@ function Dialog({ title, close, children }) {
   );
 }
 function SourceForm({ initial, batches, save }) {
-  const [v, setV] = useState(initial),
+  const [v, setV] = useDraftState("source:" + (initial.id || "new"), initial),
     [busy, setBusy] = useState(false);
   return (
-    <form
+    <DraftForm
       className="form"
       onSubmit={async (e) => {
         e.preventDefault();
@@ -576,6 +691,53 @@ function SourceForm({ initial, batches, save }) {
           repeated.
         </small>
       </label>
+      <label>
+        Excluded folders · one name, relative path or folder ID per line
+        <textarea
+          rows={4}
+          value={
+            Array.isArray(v.exclusions)
+              ? v.exclusions.join("\n")
+              : v.exclusions || ""
+          }
+          onChange={(e) => setV({ ...v, exclusions: e.target.value })}
+          placeholder="audio\nbranding\nreference_documents"
+        />
+        <small>
+          Exclusions apply to future imports. Previously published materials
+          stay available until you unpublish them.
+        </small>
+      </label>
+      {initial.folders?.length > 0 && (
+        <fieldset>
+          <legend>Discovered subfolders</legend>
+          {initial.folders.map((f) => (
+            <label className="checkbox-row" key={f.id}>
+              <input
+                type="checkbox"
+                checked={(Array.isArray(v.exclusions)
+                  ? v.exclusions
+                  : String(v.exclusions || "").split("\n")
+                ).includes(f.id)}
+                onChange={(e) => {
+                  const list = Array.isArray(v.exclusions)
+                    ? v.exclusions
+                    : String(v.exclusions || "")
+                        .split("\n")
+                        .filter(Boolean);
+                  setV({
+                    ...v,
+                    exclusions: e.target.checked
+                      ? [...list, f.id]
+                      : list.filter((x) => x !== f.id),
+                  });
+                }}
+              />{" "}
+              Exclude {f.path}
+            </label>
+          ))}
+        </fieldset>
+      )}
       <label className="checkbox-row">
         <input
           type="checkbox"
@@ -598,7 +760,7 @@ function SourceForm({ initial, batches, save }) {
         {busy ? "Saving…" : "Save folder mapping"}
         <Check size={16} />
       </button>
-    </form>
+    </DraftForm>
   );
 }
 function ReviewForm({ item: i, submit, busy }) {
@@ -612,7 +774,7 @@ function ReviewForm({ item: i, submit, busy }) {
     note: "",
   });
   return (
-    <form
+    <DraftForm
       className="form"
       onSubmit={(e) => {
         e.preventDefault();
@@ -728,6 +890,6 @@ function ReviewForm({ item: i, submit, busy }) {
           <Check size={16} />
         </button>
       </div>
-    </form>
+    </DraftForm>
   );
 }

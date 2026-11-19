@@ -66,8 +66,8 @@ def settings(*values):
 
 
 def portal_headers():
-    host = required_field(az('keyvault', 'secret', 'show', '--vault-name', cfg['VAULT'], '--name', 'arks-host-token'), 'value')
-    importer = required_field(az('keyvault', 'secret', 'show', '--vault-name', cfg['VAULT'], '--name', 'arks-importer-token'), 'value')
+    host = required_field(az('keyvault', 'secret', 'show', '--vault-name', cfg['VAULT'], '--name', 'arks-host-token'), 'value') if ORIGIN.endswith('.chatgpt.site') else ''
+    importer = required_field(az('keyvault', 'secret', 'show', '--vault-name', cfg['VAULT'], '--name', cfg.get('IMPORTER_SECRET_NAME','arks-importer-token')), 'value')
     return {'OAI-Sites-Authorization': 'Bearer ' + host, 'X-Arks-Importer-Token': importer}
 
 

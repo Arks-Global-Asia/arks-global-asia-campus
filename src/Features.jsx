@@ -1,3 +1,5 @@
+import { AssessmentAutomation } from "./WorkflowTools.jsx";
+import { DraftContext, DraftForm, useDraftState } from "./Drafts.jsx";
 import { readApiResponse } from "../shared/http.js";
 import { QUESTION_TYPES } from "../shared/assessment.js";
 import React, { useEffect, useState } from "react";
@@ -83,7 +85,7 @@ export function Login({ onLogin }) {
         )}
         <hr />
         <h2>Administrator sign-in</h2>
-        <form
+        <DraftForm
           className="form"
           onSubmit={async (e) => {
             e.preventDefault();
@@ -124,7 +126,7 @@ export function Login({ onLogin }) {
               {error}
             </p>
           )}
-        </form>
+        </DraftForm>
       </section>
     </main>
   );
@@ -282,7 +284,7 @@ export function Assessments({ tests, attempts, render }) {
           ["all", "All tests"],
           ["daily", "Daily"],
           ["weekly", "Weekly"],
-          ["monthly", "Monthly"],
+          ["topic", "Completed topic"],
         ].map(([id, label]) => (
           <button
             key={id}
@@ -339,25 +341,30 @@ export function Roadmap({ batch, course, data }) {
         {roadmap.map((s, i) => {
           const resources = data.content.filter(
             (c) =>
-              c.topic_order === i + 1 &&
+              (cfg.assessment_automation?.lesson_topics &&
+              Object.keys(cfg.assessment_automation.lesson_topics).length
+                ? String(
+                    cfg.assessment_automation.lesson_topics[c.topic_order] ||
+                      c.topic,
+                  ).toLowerCase() === s.title.toLowerCase()
+                : c.topic_order === i + 1) &&
               ["notes", "slides", "guide", "recording", "lab"].includes(c.kind),
           );
           const complete = resources.filter((c) => done.has(c.id)).length;
+          const covered =
+            resources.length > 0 &&
+            resources.every((c) => c.topic_order <= batch.covered);
           return (
             <div className="roadmap-item" key={i}>
-              <div
-                className={
-                  "road-number " + (i < batch.covered ? "covered" : "")
-                }
-              >
+              <div className={"road-number " + (covered ? "covered" : "")}>
                 {i + 1}
               </div>
               <div>
                 <h3>{s.title}</h3>
                 <p>{s.detail}</p>
                 <small>
-                  {i < batch.covered ? "Covered in class" : "Upcoming"} ·{" "}
-                  {complete}/{resources.length} tasks completed
+                  {covered ? "Covered in class" : "Upcoming"} · {complete}/
+                  {resources.length} tasks completed
                 </small>
                 <progress
                   max={Math.max(1, resources.length)}
@@ -403,8 +410,10 @@ function zoned(date, time, zone) {
   return new Date(timestamp).toISOString();
 }
 export function AdminTools({ tab, data, batchId, act, refresh, edit }) {
+  const draftScope = React.useContext(DraftContext);
   const [features, setFeatures] = useState(null),
-    [localBatch, setLocalBatch] = useState(
+    [localBatch, setLocalBatch] = useDraftState(
+      "selected-batch",
       batchId || data.batches[0]?.id || "",
     ),
     [notice, setNotice] = useState(""),
@@ -433,89 +442,100 @@ export function AdminTools({ tab, data, batchId, act, refresh, edit }) {
   }
   if (!features) return <p>{notice || "Loading campus controls…"}</p>;
   return (
-    <div className="feature-tools">
-      <div className="row between wrap">
-        <h2>
-          {
+    <DraftContext.Provider value={draftScope + ":" + localBatch}>
+      <div className="feature-tools">
+        <div className="row between wrap">
+          <h2>
             {
-              settings: "Batch experience",
-              schedule: "Live session planner",
-              engine: "Assessment studio",
-              access: "Access & administrators",
-            }[tab]
-          }
-        </h2>
-        <Select
-          label="Batch"
-          value={localBatch}
-          onChange={setLocalBatch}
-          options={data.batches.map((b) => [b.id, b.name])}
-        />
+              {
+                settings: "Batch experience",
+                schedule: "Live session planner",
+                engine: "Assessment studio",
+                access: "Access & administrators",
+              }[tab]
+            }
+          </h2>
+          <Select
+            label="Batch"
+            value={localBatch}
+            onChange={setLocalBatch}
+            options={data.batches.map((b) => [b.id, b.name])}
+          />
+        </div>
+        {notice && (
+          <p role="status" className="info-strip">
+            {notice}
+          </p>
+        )}
+        {!batch ? (
+          <p>Create a batch first.</p>
+        ) : (
+          <>
+            {tab === "settings" && (
+              <BatchSettings
+                key={batch.id + "-" + batch.config}
+                batch={batch}
+                data={data}
+                save={save}
+                pending={pending}
+                features={features}
+              />
+            )}
+            {tab === "schedule" && (
+              <Schedule
+                key={batch.id}
+                batch={batch}
+                data={data}
+                save={save}
+                pending={pending}
+                edit={edit}
+              />
+            )}
+            {tab === "engine" && (
+              <AssessmentAutomation
+                batch={batch}
+                course={data.courses.find((c) => c.id === batch.course_id)}
+                save={save}
+                pending={pending}
+              />
+            )}
+            {tab === "engine" && (
+              <Studio
+                key={batch.id}
+                batch={batch}
+                data={data}
+                save={save}
+                features={features}
+                pending={pending}
+                edit={edit}
+              />
+            )}
+            {tab === "access" && (
+              <Access
+                key={batch.id}
+                batch={batch}
+                data={data}
+                save={save}
+                pending={pending}
+                features={features}
+              />
+            )}
+          </>
+        )}
       </div>
-      {notice && (
-        <p role="status" className="info-strip">
-          {notice}
-        </p>
-      )}
-      {!batch ? (
-        <p>Create a batch first.</p>
-      ) : (
-        <>
-          {tab === "settings" && (
-            <BatchSettings
-              key={batch.id + "-" + batch.config}
-              batch={batch}
-              data={data}
-              save={save}
-              pending={pending}
-              features={features}
-            />
-          )}
-          {tab === "schedule" && (
-            <Schedule
-              key={batch.id}
-              batch={batch}
-              data={data}
-              save={save}
-              pending={pending}
-              edit={edit}
-            />
-          )}
-          {tab === "engine" && (
-            <Studio
-              key={batch.id}
-              batch={batch}
-              data={data}
-              save={save}
-              features={features}
-              pending={pending}
-              edit={edit}
-            />
-          )}
-          {tab === "access" && (
-            <Access
-              key={batch.id}
-              batch={batch}
-              data={data}
-              save={save}
-              pending={pending}
-              features={features}
-            />
-          )}
-        </>
-      )}
-    </div>
+    </DraftContext.Provider>
   );
 }
 function BatchSettings({ batch, data, save, pending, features }) {
   const cfg = JSON.parse(batch.config || "{}"),
-    [roadmap, setRoadmap] = useState(
+    [roadmap, setRoadmap] = useDraftState(
+      "roadmap:" + batch.id,
       JSON.stringify(cfg.roadmap || [], null, 2),
     ),
     [parseError, setParseError] = useState("");
   return (
     <>
-      <form
+      <DraftForm
         className="panel form"
         onSubmit={(e) => {
           e.preventDefault();
@@ -560,14 +580,15 @@ function BatchSettings({ batch, data, save, pending, features }) {
           />
         </Field>
         <Field
-          label="Lab submissions destination: Shared Drive folder ID"
+          label="Lab answers folder ID (optional override)"
           name="submission_folder"
           defaultValue={cfg.submission_folder || ""}
         />
         <p className="help-note">
           Students upload PDF/DOCX in the portal. The Azure engine transfers
-          submissions to this private folder. A Shared Drive or delegated
-          Workspace identity is needed for service-account uploads.
+          submissions to labs/lab_answers/student-name under the connected batch
+          folder, or student-name under this override. A Shared Drive or
+          delegated Workspace identity is needed for service-account uploads.
         </p>
         <Field label="Roadmap (title and detail for each topic)">
           <textarea
@@ -585,7 +606,7 @@ function BatchSettings({ batch, data, save, pending, features }) {
         <button className="button" disabled={pending}>
           Save batch experience
         </button>
-      </form>
+      </DraftForm>
       <section className="panel">
         <h3>Extract a roadmap from the approved SOP</h3>
         {data.content
@@ -666,7 +687,7 @@ function Schedule({ batch, data, save, pending, edit }) {
   const [error, setError] = useState("");
   return (
     <>
-      <form
+      <DraftForm
         className="panel form"
         onSubmit={(e) => {
           e.preventDefault();
@@ -744,7 +765,7 @@ function Schedule({ batch, data, save, pending, edit }) {
         <button className="button" disabled={pending}>
           Create sessions
         </button>
-      </form>
+      </DraftForm>
       <section className="panel">
         <h3>Scheduled classes</h3>
         {data.content
@@ -805,7 +826,7 @@ function Schedule({ batch, data, save, pending, edit }) {
   );
 }
 function Studio({ batch, data, save, features, pending, edit }) {
-  const [chosen, setChosen] = useState([]);
+  const [chosen, setChosen] = useDraftState("sources:" + batch.id, []);
   const materials = data.content.filter(
     (c) =>
       c.published &&
@@ -815,7 +836,7 @@ function Studio({ batch, data, save, features, pending, edit }) {
   );
   return (
     <>
-      <form
+      <DraftForm
         className="panel form"
         onSubmit={(e) => {
           e.preventDefault();
@@ -845,7 +866,7 @@ function Studio({ batch, data, save, features, pending, edit }) {
             <select name="kind">
               <option value="daily">Daily</option>
               <option value="weekly">Weekly</option>
-              <option value="monthly">Monthly</option>
+              <option value="topic">Completed topic</option>
             </select>
           </Field>
           <Field
@@ -919,7 +940,7 @@ function Studio({ batch, data, save, features, pending, edit }) {
         >
           Generate draft assessment
         </button>
-      </form>
+      </DraftForm>
       <section className="panel">
         <h3>Generation and evaluation jobs</h3>
         {features.jobs
@@ -980,7 +1001,7 @@ function Access({ batch, data, features, save, pending }) {
           synchronization requires your Workspace administrator’s setup.
         </p>
       </section>
-      <form
+      <DraftForm
         key={group}
         className="panel form"
         onSubmit={(e) => {
@@ -1035,8 +1056,8 @@ function Access({ batch, data, features, save, pending }) {
         <button className="button" disabled={pending}>
           Save group & enroll members
         </button>
-      </form>
-      <form
+      </DraftForm>
+      <DraftForm
         className="panel form"
         onSubmit={async (e) => {
           e.preventDefault();
@@ -1066,7 +1087,7 @@ function Access({ batch, data, features, save, pending }) {
         <button className="button" disabled={pending}>
           Save administrator credentials
         </button>
-      </form>
+      </DraftForm>
       <section className="panel">
         <h3>Account access</h3>
         {data.users.map((u) => (

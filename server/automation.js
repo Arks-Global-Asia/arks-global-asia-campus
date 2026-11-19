@@ -1,3 +1,4 @@
+import { sourcePolicy, excludedPath, planAssessments } from "./learning.js";
 import { engineRoutes, engineFile, wakeEngine } from "./features.js";
 const now = () => new Date().toISOString(),
   uuid = () => crypto.randomUUID();
@@ -173,9 +174,13 @@ async function audit(db, actor, action, entity) {
 }
 export async function automationState(db) {
   return {
-    sources: await all(
-      db,
-      "SELECT s.*,b.name batch_name,b.course_id FROM automation_sources s JOIN batches b ON b.id=s.batch_id ORDER BY s.created DESC",
+    sources: await Promise.all(
+      (
+        await all(
+          db,
+          "SELECT s.*,b.name batch_name,b.course_id FROM automation_sources s JOIN batches b ON b.id=s.batch_id ORDER BY s.created DESC",
+        )
+      ).map(async (s) => ({ ...s, ...(await sourcePolicy(db, s.id)) })),
     ),
     items: await all(
       db,
@@ -191,7 +196,10 @@ export async function adminAutomation(req, env, u) {
   if (u.role !== "admin") fail(403, "Administrator access required.");
   const db = env.DB,
     p = new URL(req.url).pathname;
-  const runtime = { importer_configured: !!env.IMPORTER_TOKEN_SHA256 };
+  const runtime = {
+    importer_configured: !!env.IMPORTER_TOKEN_SHA256,
+    engine_ready: !!(env.AZURE_ENGINE_URL && env.AZURE_ENGINE_KEY),
+  };
   if (p.endsWith("/state") && req.method === "GET")
     return response({ ...(await automationState(db)), ...runtime });
   if (req.method !== "POST") fail(405, "Method not allowed.");
@@ -203,6 +211,50 @@ export async function adminAutomation(req, env, u) {
       d.folder_input,
       d.enabled !== false,
     );
+    const oldPolicy = await sourcePolicy(db, id);
+    if (d.exclusions !== undefined) {
+      const exclusions = Array.isArray(d.exclusions)
+        ? d.exclusions
+        : String(d.exclusions)
+            .split(/\n|,/)
+            .map((v) => v.trim())
+            .filter(Boolean);
+      if (
+        exclusions.length > 100 ||
+        exclusions.some(
+          (v) => typeof v !== "string" || v.length > 300 || v.includes(".."),
+        )
+      )
+        fail(400, "Use up to 100 folder IDs, names or relative paths.");
+      await run(
+        db,
+        "INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        "source-policy:" + id,
+        JSON.stringify({ ...oldPolicy, exclusions }),
+      );
+      if (
+        JSON.stringify(oldPolicy.exclusions || []) !==
+        JSON.stringify(exclusions)
+      ) {
+        await db.batch([
+          db
+            .prepare(
+              "UPDATE automation_sources SET generation=generation+1,sync_requested=1 WHERE id=?",
+            )
+            .bind(id),
+          db
+            .prepare(
+              "UPDATE import_runs SET status='failed',finished=?,message='Folder exclusions changed; restart scan.' WHERE source_id=? AND status='running'",
+            )
+            .bind(now(), id),
+          db
+            .prepare(
+              "UPDATE import_items SET status='superseded',review_note='Folder exclusions changed before review.' WHERE source_id=? AND status='pending'",
+            )
+            .bind(id),
+        ]);
+      }
+    }
     await audit(db, u.id, "save:automation_source", id);
     return response({ id });
   }
@@ -229,6 +281,57 @@ export async function adminAutomation(req, env, u) {
       message: dispatched
         ? "Azure accepted an immediate scan. Check Run history for completion."
         : "Queued for the next scheduled scan. Configure the Azure engine endpoint to enable immediate Sync Up.",
+    });
+  }
+  if (p.endsWith("/bulk-review")) {
+    if (!Array.isArray(d.ids) || !d.ids.length || d.ids.length > 100)
+      fail(400, "Select 1–100 materials.");
+    if (d.confirmed_student_safe !== true)
+      fail(400, "Confirm the selected materials are student-safe.");
+    const results = [];
+    const batches = new Set();
+    for (const id of [...new Set(d.ids)]) {
+      try {
+        const item = await one(
+          db,
+          "SELECT s.batch_id FROM import_items i JOIN automation_sources s ON s.id=i.source_id WHERE i.id=?",
+          id,
+        );
+        const r = await adminAutomation(
+          new Request(new URL("/api/admin/automation/review", req.url), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              id,
+              action: "approve",
+              confirmed_student_safe: true,
+              topic: d.topic || undefined,
+            }),
+          }),
+          { ...env, SKIP_ASSESSMENT_PLAN: true },
+          u,
+        );
+        results.push({ id, ok: r.ok });
+        if (item) batches.add(item.batch_id);
+      } catch (e) {
+        results.push({
+          id,
+          ok: false,
+          message: e.status ? e.message : "Release failed; retry.",
+        });
+      }
+    }
+    for (const batch of batches) await planAssessments(env, batch);
+    try {
+      await wakeEngine(env);
+    } catch {}
+    return response({
+      results,
+      message:
+        results.filter((r) => r.ok).length +
+        " released; " +
+        results.filter((r) => !r.ok).length +
+        " need attention.",
     });
   }
   if (p.endsWith("/review")) {
@@ -298,9 +401,8 @@ export async function adminAutomation(req, env, u) {
     }
     const previous = await one(
       db,
-      "SELECT content_id FROM import_items WHERE source_id=? AND generation=? AND drive_file_id=? AND content_id IS NOT NULL ORDER BY reviewed_at DESC LIMIT 1",
+      "SELECT content_id FROM import_items WHERE source_id=? AND drive_file_id=? AND content_id IS NOT NULL ORDER BY reviewed_at DESC LIMIT 1",
       i.source_id,
-      i.generation,
       i.drive_file_id,
     );
     const cid = previous?.content_id || uuid(),
@@ -330,9 +432,9 @@ export async function adminAutomation(req, env, u) {
         ),
       db
         .prepare(
-          "UPDATE import_items SET status='superseded' WHERE source_id=? AND generation=? AND drive_file_id=? AND status='published'",
+          "UPDATE import_items SET status='superseded' WHERE source_id=? AND drive_file_id=? AND status='published'",
         )
-        .bind(i.source_id, i.generation, i.drive_file_id),
+        .bind(i.source_id, i.drive_file_id),
       db
         .prepare(
           "UPDATE import_items SET status='published',content_id=?,title=?,topic=?,topic_order=?,review_note=?,reviewed_by=?,reviewed_at=? WHERE id=? AND status='pending'",
@@ -353,6 +455,12 @@ export async function adminAutomation(req, env, u) {
         )
         .bind(uuid(), u.id, "publish:import", i.id, now()),
     ]);
+    if (!env.SKIP_ASSESSMENT_PLAN) {
+      await planAssessments(env, i.batch_id);
+      try {
+        await wakeEngine(env);
+      } catch {}
+    }
     return response({ ok: true, content_id: cid });
   }
   fail(404, "Automation action not found.");
@@ -541,7 +649,10 @@ export async function serviceAutomation(req, env) {
       "UPDATE automation_sources SET status='scanning',last_error=NULL,sync_requested=0 WHERE id=?",
       s.id,
     );
-    return response({ run_id: id, source: s });
+    return response({
+      run_id: id,
+      source: { ...s, ...(await sourcePolicy(db, s.id)) },
+    });
   }
   if (p.endsWith("/resolve")) {
     const r = await activeRun(db, d.run_id);
@@ -564,12 +675,35 @@ export async function serviceAutomation(req, env) {
     );
     return response({ ok: true });
   }
+  if (p.endsWith("/folders")) {
+    const r = await activeRun(db, d.run_id);
+    if (!Array.isArray(d.folders) || d.folders.length > 100)
+      fail(400, "Send up to 100 folders.");
+    if (
+      d.folders.some(
+        (f) =>
+          !fileId(f.id) || typeof f.path !== "string" || f.path.length > 1000,
+      )
+    )
+      fail(400, "Invalid folder metadata.");
+    const policy = await sourcePolicy(db, r.source_id),
+      known = new Map((policy.folders || []).map((f) => [f.id, f]));
+    for (const f of d.folders) known.set(f.id, { id: f.id, path: f.path });
+    await run(
+      db,
+      "INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+      "source-policy:" + r.source_id,
+      JSON.stringify({ ...policy, folders: [...known.values()].slice(-2000) }),
+    );
+    return response({ ok: true });
+  }
   if (p.endsWith("/ingest")) {
     const r = await activeRun(db, d.run_id);
     if (!r.folder_id) fail(409, "Resolve the source folder before importing.");
     if (!Array.isArray(d.items) || d.items.length > 50)
       fail(400, "Send at most 50 items per request.");
     const output = [];
+    const policy = await sourcePolicy(db, r.source_id);
     for (const v of d.items) {
       if (!fileId(v.drive_file_id)) fail(400, "Invalid source file ID.");
       if (
@@ -587,6 +721,13 @@ export async function serviceAutomation(req, env) {
         size = Number(v.size || 0);
       if (!Number.isSafeInteger(size) || size < 0)
         fail(400, "Invalid file size.");
+      if (
+        excludedPath(path, v.drive_file_id, policy) ||
+        v.ancestor_ids.some((id) => (policy.exclusions || []).includes(id))
+      ) {
+        output.push({ status: "restricted", excluded: true });
+        continue;
+      }
       const old = await one(
         db,
         "SELECT id,status,file_id FROM import_items WHERE source_id=? AND generation=? AND drive_file_id=? AND revision=?",
@@ -673,6 +814,14 @@ export async function serviceAutomation(req, env) {
           r.generation,
         ),
     ]);
+    if (status === "succeeded") {
+      const source = await one(
+        db,
+        "SELECT batch_id FROM automation_sources WHERE id=?",
+        r.source_id,
+      );
+      await planAssessments(env, source.batch_id);
+    }
     return response({ ok: true });
   }
   fail(404, "Automation endpoint not found.");

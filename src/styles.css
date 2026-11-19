@@ -3386,3 +3386,150 @@ button:disabled {
 .answer-review .prewrap {
   overflow-wrap: anywhere;
 }
+
+/* Campus operations: compact controls, clear hierarchy, quiet motion. */
+.draft-status {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: center;
+  color: var(--muted, #6d8092);
+  font-size: 12px;
+  border-top: 1px solid #dce6ec;
+  padding-top: 14px;
+  margin-top: 10px;
+}
+.release-toolbar {
+  margin-bottom: 20px;
+}
+.release-toolbar small {
+  display: block;
+  margin-top: 12px;
+  color: #61798a;
+}
+.release-toolbar label {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.release-toolbar input:not([type="checkbox"]) {
+  padding: 9px;
+  border: 1px solid #dce6ec;
+  border-radius: 9px;
+}
+.skill-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 15px 0;
+  border-bottom: 1px solid #e8eef2;
+}
+.skill-row small {
+  display: block;
+  margin-top: 6px;
+  color: #6b8192;
+}
+.skill-row progress {
+  accent-color: #125171;
+  max-width: 28%;
+  height: 8px;
+}
+.resource-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.resource-links a {
+  font-size: 13px;
+  color: #125171;
+}
+.mode-switch.compact {
+  padding: 8px 12px;
+  margin: 0;
+  font-size: 12px;
+}
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  margin: 18px 0;
+}
+.answer-review summary {
+  cursor: pointer;
+  line-height: 1.7;
+}
+.answer-review summary small {
+  margin-left: 10px;
+}
+.button,
+button,
+a {
+  transition:
+    background 0.16s ease,
+    transform 0.16s ease,
+    box-shadow 0.16s ease;
+}
+button:active,
+.button:active {
+  transform: translateY(1px);
+}
+.admin-tabs {
+  flex-wrap: wrap;
+  overflow: visible;
+  gap: 6px;
+}
+.admin-tabs button {
+  white-space: nowrap;
+  padding: 9px 12px;
+}
+.topbar .header-right {
+  flex-wrap: wrap;
+}
+@media (max-width: 700px) {
+  .metrics-grid {
+    grid-template-columns: 1fr;
+  }
+  .skill-row {
+    flex-wrap: wrap;
+  }
+  .skill-row progress {
+    max-width: 100%;
+    flex: 1;
+  }
+  .topbar .mode-switch.compact {
+    font-size: 11px;
+  }
+  .release-toolbar .row {
+    align-items: stretch;
+  }
+  .release-toolbar label {
+    flex-wrap: wrap;
+  }
+  .admin-tabs {
+    gap: 4px;
+  }
+  .admin-tabs button {
+    font-size: 11px;
+    padding: 8px;
+  }
+  .draft-status {
+    flex-wrap: wrap;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .button,
+  button,
+  a {
+    transition: none !important;
+    transform: none !important;
+  }
+}
+.enrollment-label {
+  display: block;
+  font-size: 11px;
+  color: #6b8192;
+  margin-top: 5px;
+  max-width: 230px;
+  white-space: normal;
+}

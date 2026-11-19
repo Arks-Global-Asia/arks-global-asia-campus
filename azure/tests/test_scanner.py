@@ -162,3 +162,12 @@ class ScannerTests(unittest.TestCase):
 
 
 if __name__ == '__main__': unittest.main()
+
+class FolderPolicyTests(unittest.TestCase):
+    def test_custom_exclusions_discover_folder_without_loading_its_files(self):
+        p=FakePortal(); d=FakeDrive({None:{'files':[file('audio_folder_1234',name='audio',mimeType=FOLDER)]}})
+        with patch.dict(SOURCE,{'exclusions':['audio']}):
+            self.assertEqual(scan_source(p,d,Memory(),'source'),'succeeded')
+        self.assertTrue(any(action=='folders' for action,_ in p.calls))
+        self.assertEqual(d.downloads,[])
+        self.assertEqual(len(d.tokens),1)

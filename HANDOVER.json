@@ -1,9 +1,9 @@
 {
-  "release": "1.1",
-  "date_ist": "2026-11-18",
+  "release": "1.2",
+  "date_ist": "2026-11-19",
   "source_baseline": "abe90e51e9ec39cb8e4e73cc7b11d7cef8c5f34c",
-  "javascript_checks": 36,
-  "python_checks": 20,
+  "javascript_checks": 42,
+  "python_checks": 22,
   "build": "passed",
   "pdfs_in_repository": false,
   "azure_portal_migration": "runtime_implemented_cloud_activation_and_existing_data_transfer_required",
@@ -16,10 +16,21 @@
     "Central PostgreSQL profiles and batch enrollments",
     "Entra state/nonce/PKCE and signed identity validation",
     "Private Azure Blob file adapter",
-    "Explicit setup and automation cutover scripts"
+    "Explicit setup and automation cutover scripts",
+    "Assign existing students to batches immediately",
+    "Course SOP attachment",
+    "Scoped persistent administrator drafts",
+    "Direct and bulk approvals with private-file restrictions",
+    "Source folder discovery and exclusions",
+    "Idempotent automatic daily/weekly/SOP-topic assessments",
+    "Private results and topic/subtopic performance",
+    "Named student Drive lab-answer folders",
+    "Worker configuration recovery and Azure portal cutover"
   ],
   "production_dependency_audit": "0 known vulnerabilities reported",
-  "postgres_integration_checks": 36,
+  "postgres_integration_checks": 42,
   "central_user_database": "arks_global_institutes",
-  "postgres_host": "pg-arksglobal-asia.postgres.database.azure.com"
+  "postgres_host": "pg-arksglobal-asia.postgres.database.azure.com",
+  "operations_upgrade": "implemented_requires_signed_in_worker_upgrade_and_cutover",
+  "entra_group_enforcement": "not_implemented_portal_enrollments_remain_authoritative"
 }

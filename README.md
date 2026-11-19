@@ -76,3 +76,34 @@ The separate PDF set covers system architecture, authentication, request/data co
 ## Credentials
 
 Use server runtime settings or Azure Key Vault. Never put client secrets, API keys, student exports or tokens into source, issues or Actions logs. `.env.example` lists names only. Several bootstrap/upgrade scripts expect nonsecret local Azure/Google configuration JSON generated in the operator's signed-in Cloud Shell; those actual configuration files are deliberately not included.
+
+
+## Campus operations release 1.2
+
+Course SOPs, immediate batch assignment for existing students, scoped admin drafts,
+direct/bulk material release, source exclusions, automatic daily/weekly/completed-topic
+tests, student performance and named Drive submission folders are implemented.
+Existing database tables are reused; no schema migration is required.
+
+The web/API workflow does not deploy the separately hosted Python worker. From signed-in
+Azure Cloud Shell at the repository root, run:
+
+```bash
+git pull --ff-only
+python3 azure/upgrade-engine.py
+python3 azure/connect-portal-worker.py
+python3 azure/operate.py smoke
+```
+
+The upgrade pauses the timer. After a successful smoke check, enable the existing
+03:00/10:00 IST schedule with `python3 azure/operate.py enable`. Immediate Sync Up
+works without the timer once the engine is connected. Enter DeepSeek credentials
+only at the hidden prompt. Existing resources are reused; missing nonsecret worker
+configuration can be recovered from the known Function App.
+
+Set each batch's Assessment studio automation policy. Map class numbers to exact SOP
+topics; do not use incidental tool keywords to infer completion. Automatic publication
+can be disabled independently of generation. Scanned images require OCR text or readable
+notes; the engine does not watch recordings. Entra group synchronization remains
+unimplemented; existing role, enrollment and optional portal-group checks still apply.
+Professional PDF operations documentation is delivered separately, outside this repository.

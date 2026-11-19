@@ -47,6 +47,7 @@ def scan_batch(job: func.QueueMessage):
         import uuid
         uuid.UUID(source_id)
         outcome = scan_source(Portal(), Drive(drive_session()), Checkpoints(), source_id)
+        queue_engine_jobs()
         logging.info("Batch scan %s: %s", source_id, outcome)
     except Exception:
         # SDK exception strings may contain request headers. Never log their chain.

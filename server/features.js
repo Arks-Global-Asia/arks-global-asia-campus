@@ -103,6 +103,43 @@ function safeConfig(d) {
     pass_mark: Math.min(100, Math.max(1, Number(d.pass_mark) || 70)),
     sop_content_id: d.sop_content_id || "",
     require_google_group: !!d.require_google_group,
+    assessment_automation: (() => {
+      const v = d.assessment_automation || {};
+      if (
+        v.required_kinds &&
+        (!Array.isArray(v.required_kinds) ||
+          v.required_kinds.some(
+            (k) =>
+              !["recording", "notes", "slides", "guide", "lab"].includes(k),
+          ))
+      )
+        fail(400, "Invalid required resource types.");
+      if (
+        v.lesson_topics &&
+        (typeof v.lesson_topics !== "object" ||
+          Object.keys(v.lesson_topics).some((k) => !/^\d{1,3}$/.test(k)))
+      )
+        fail(400, "Lesson mapping needs class numbers.");
+      return {
+        enabled: v.enabled !== false,
+        auto_publish: v.auto_publish !== false,
+        week_size: Math.max(1, Math.min(30, Number(v.week_size) || 7)),
+        question_count: Math.max(
+          11,
+          Math.min(100, Number(v.question_count) || 12),
+        ),
+        required_kinds: v.required_kinds || [
+          "recording",
+          "notes",
+          "slides",
+          "lab",
+        ],
+        lesson_topics: v.lesson_topics || {},
+        completed_topics: Array.isArray(v.completed_topics)
+          ? v.completed_topics.map(String).slice(0, 100)
+          : [],
+      };
+    })(),
   };
 }
 export async function featureRoutes(req, env, u) {
@@ -127,13 +164,19 @@ export async function featureRoutes(req, env, u) {
   if (p === "/api/admin/batch-config" && req.method === "POST") {
     admin(u);
     const d = await req.json();
-    await member(db, u, d.batch_id);
+    const previous = await member(db, u, d.batch_id);
     await run(
       db,
       "UPDATE batches SET config=? WHERE id=?",
-      JSON.stringify(safeConfig(d)),
+      JSON.stringify(
+        safeConfig({ ...JSON.parse(previous.config || "{}"), ...d }),
+      ),
       d.batch_id,
     );
+    await (await import("./learning.js")).planAssessments(env, d.batch_id);
+    try {
+      await wakeEngine(env);
+    } catch {}
     return json({ ok: true });
   }
   if (p === "/api/admin/access" && req.method === "POST") {
@@ -316,7 +359,7 @@ export async function featureRoutes(req, env, u) {
       fail(503, "Configure the Azure engine before generating assessments.");
     const d = await req.json(),
       b = await member(db, u, d.batch_id);
-    if (!["daily", "weekly", "monthly"].includes(d.kind))
+    if (!["daily", "weekly", "monthly", "topic"].includes(d.kind))
       fail(400, "Choose daily, weekly or monthly.");
     const ids = [...new Set(d.source_ids || [])];
     if (!ids.length || ids.length > 30)
@@ -548,7 +591,17 @@ export async function engineRoutes(req, env) {
         "SELECT config FROM batches WHERE id=?",
         s.batch_id,
       );
-      payload.folder_id = JSON.parse(b.config || "{}").submission_folder;
+      const explicit = JSON.parse(b.config || "{}").submission_folder;
+      const source = await one(
+        db,
+        "SELECT folder_id FROM automation_sources WHERE batch_id=? AND enabled=1",
+        s.batch_id,
+      );
+      payload.folder_id = explicit || source?.folder_id;
+      payload.folder_is_batch_root = !explicit;
+      payload.student_name =
+        (await one(db, "SELECT name FROM users WHERE id=?", s.user_id))?.name ||
+        "Student";
       payload.student_id = s.user_id;
       payload.submission_id = s.id;
     }
@@ -594,7 +647,17 @@ export async function engineRoutes(req, env) {
       result.questions.some((q) => !validQuestion(q))
     )
       fail(400, "Generated questions do not match the requested schema.");
-    const qs = normalizeQuestions(result.questions);
+    const qs = normalizeQuestions(result.questions).map((q) => ({
+      ...q,
+      topic: String(
+        payload.kind === "topic"
+          ? payload.topic
+          : q.topic || payload.topic || "Class materials",
+      ).slice(0, 200),
+      subtopic: String(
+        q.subtopic || q.topic || payload.topic || "Class materials",
+      ).slice(0, 200),
+    }));
     if (
       payload.question_types?.length &&
       payload.question_types.some((type) => !qs.some((q) => q.type === type))
@@ -614,7 +677,7 @@ export async function engineRoutes(req, env) {
         fail(409, "Source approval changed.");
     await run(
       db,
-      "INSERT INTO tests(id,course_id,title,kind,topic_order,duration,questions,published,batch_id,source_ids,ai_generated) VALUES (?,?,?,?,?,?,?,0,?,?,1) ON CONFLICT(id) DO NOTHING",
+      "INSERT INTO tests(id,course_id,title,kind,topic_order,duration,questions,published,batch_id,source_ids,ai_generated) VALUES (?,?,?,?,?,?,?,?,?,?,1) ON CONFLICT(id) DO NOTHING",
       j.entity_id,
       payload.course_id,
       payload.title,
@@ -622,6 +685,7 @@ export async function engineRoutes(req, env) {
       payload.topic_order,
       payload.duration,
       JSON.stringify(qs),
+      payload.automatic && payload.auto_publish ? 1 : 0,
       j.batch_id,
       JSON.stringify(payload.source_ids),
     );

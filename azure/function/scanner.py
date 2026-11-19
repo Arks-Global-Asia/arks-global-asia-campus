@@ -22,7 +22,7 @@ SHORTCUT = "application/vnd.google-apps.shortcut"
 FIELDS = "id,name,mimeType,modifiedTime,version,size,parents,md5Checksum,trashed"
 MAX_BYTES = 20 * 1024 * 1024
 EXTENSIONS = re.compile(r"\.(pdf|pptx|docx|txt|md|png|jpg|jpeg|webp|zip|xlsx|csv)$", re.I)
-SKIP_FOLDERS = {"images", "branding", "reference_documents", "student_submissions", "submissions", "lab_answers"}
+SKIP_FOLDERS = {"student_submissions", "submissions", "lab_answers"}
 
 
 class ScanError(Exception):
@@ -64,7 +64,7 @@ class Portal:
         })
 
     def call(self, action, body=None):
-        if action not in {"sources", "claim", "resolve", "ingest", "finish", "jobs", "jobs/claim", "jobs/finish", "groups", "groups/snapshot"}:
+        if action not in {"sources", "claim", "resolve", "ingest", "finish", "jobs", "jobs/claim", "jobs/finish", "groups", "groups/snapshot", "folders"}:
             raise ScanError("Operation is not permitted for this worker.")
         # Claim must not be retried blindly: a lost response can mean a live lease.
         with request(self.session, "GET" if body is None else "POST",
@@ -191,8 +191,13 @@ def scan_source(portal, drive, checkpoints, source_id, *, max_pages=200, seconds
                 if current["id"] not in file.get("parents", []):
                     raise ScanError("Drive returned a file outside the enumerated parent.")
                 if file["mimeType"] == FOLDER:
-                    if file["name"].lower().replace(" ", "_") not in SKIP_FOLDERS:
-                        folders.append({"id": file["id"], "path": current["path"] + "/" + file["name"],
+                    path = current['path'] + '/' + file['name']
+                    portal.call('folders', {'run_id': run_id, 'folders': [{'id':file['id'], 'path':path}]})
+                    exclusions = source.get('exclusions', [])
+                    relative = path.removeprefix('batch/').lower()
+                    excluded = any(value == file['id'] or (value.strip('/').lower() in relative.split('/') if '/' not in value else relative == value.strip('/').lower() or relative.startswith(value.strip('/').lower() + '/')) for value in exclusions)
+                    if file["name"].lower().replace(" ", "_") not in SKIP_FOLDERS and not excluded:
+                        folders.append({"id": file["id"], "path": path,
                                         "ancestors": [file["id"]] + current["ancestors"], "token": None})
                 elif file["mimeType"] != SHORTCUT:  # Never follow a shortcut outside the batch.
                     files.append(file)

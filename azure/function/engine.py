@@ -87,7 +87,7 @@ def deepseek(system, content):
 def generate(portal, job):
     p = job['payload']; text = source_text(portal, job); questions = []
     types = p.get('question_types') or ['mcq']
-    schema = ('Each question must have type, prompt, explanation and relative marks (positive number). '
+    schema = ('Each question must have type, prompt, explanation, topic (the exact curriculum topic), subtopic (specific skill tested), and relative marks (positive number). '
               'mcq/true_false: options array and zero-based integer answer; true_false has True/False options. '
               'multi_select: options and array of correct zero-based indices. '
               'fill_blank: accepted_answers array of valid strings. '
@@ -100,7 +100,7 @@ def generate(portal, job):
         count = min(6, p['count'] - len(questions))
         requested = [types[i % len(types)] for i in range(len(questions), len(questions) + count)]
         value = deepseek('You are a DevOps instructor. Generate exactly ' + str(count) + ' distinct questions grounded only in the supplied approved materials, with types in the exact requested order. Return {"questions":[...]}. ' + schema,
-                         json.dumps({'materials': text, 'requested_types': requested, 'earlier_questions': [q['prompt'] for q in questions]}))
+                         json.dumps({'curriculum_topic': p.get('topic'), 'assessment_kind': p.get('kind'), 'materials': text, 'requested_types': requested, 'earlier_questions': [q['prompt'] for q in questions]}))
         qs = value.get('questions')
         if not isinstance(qs, list) or len(qs) != count or [q.get('type') for q in qs] != requested:
             raise ScanError('AI returned the wrong question count or types. Retry generation.')
@@ -122,6 +122,22 @@ def evaluate(job):
     return {'feedback': feedback}
 
 
+def ensure_folder(session, parent, name, identity=None):
+    escaped = name.replace("\\", "\\\\").replace("'", "\\'")
+    query = "trashed=false and mimeType='application/vnd.google-apps.folder' and '" + parent + "' in parents"
+    if identity:
+        query += " and appProperties has {key='arks_student' and value='" + identity + "'}"
+    else:
+        query += " and name='" + escaped + "'"
+    with request(session, 'GET', 'https://www.googleapis.com/drive/v3/files', params={'q':query,'fields':'files(id)','supportsAllDrives':'true','includeItemsFromAllDrives':'true'}) as r:
+        found=r.json().get('files',[])
+    if found: return found[0]['id']
+    metadata={'name':name,'mimeType':'application/vnd.google-apps.folder','parents':[parent]}
+    if identity: metadata['appProperties']={'arks_student':identity}
+    with request(session, 'POST', 'https://www.googleapis.com/drive/v3/files', params={'fields':'id','supportsAllDrives':'true'}, json=metadata) as r:
+        return r.json()['id']
+
+
 def upload_submission(portal, job):
     p = job['payload']; f = p['file']; folder = p.get('folder_id')
     if not folder or not re.fullmatch(r'[\w-]{10,200}', folder):
@@ -129,6 +145,12 @@ def upload_submission(portal, job):
     if not re.search(r'\.(pdf|docx)$', f['name'], re.I):
         raise ScanError('Only PDF and DOCX lab solutions can be transferred.')
     session = drive_session(write=True)
+    if p.get('folder_is_batch_root'):
+        folder=ensure_folder(session, folder, 'labs')
+        folder=ensure_folder(session, folder, 'lab_answers')
+    # Keep student identity in appProperties; names are display-only and sanitized.
+    student_name=re.sub(r'[\x00-\x1f/\\<>:"|?*]', '_', p.get('student_name') or 'Student').strip('. ')[:100] or 'Student'
+    folder=ensure_folder(session,folder,student_name,p['student_id'])
     # appProperties makes a retry reuse an already uploaded file.
     query = "trashed=false and '" + folder + "' in parents and appProperties has {key='arks_submission' and value='" + p['submission_id'] + "'}"
     with request(session, 'GET', 'https://www.googleapis.com/drive/v3/files', params={'q': query, 'fields': 'files(id)', 'supportsAllDrives': 'true', 'includeItemsFromAllDrives': 'true'}) as r:
@@ -136,7 +158,7 @@ def upload_submission(portal, job):
     if existing:
         return {'url': 'https://drive.google.com/file/d/' + existing[0]['id'] + '/view'}
     data = job_file(portal, job, f['id'])
-    metadata = {'name': p['student_id'] + '-' + f['name'], 'parents': [folder], 'appProperties': {'arks_submission': p['submission_id']}}
+    metadata = {'name': p['submission_id'] + '-' + f['name'], 'parents': [folder], 'appProperties': {'arks_submission': p['submission_id']}}
     boundary = 'arks_submission_boundary'
     mime = 'application/pdf' if f['name'].lower().endswith('.pdf') else 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
     body = ('--' + boundary + '\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n' + json.dumps(metadata) + '\r\n--' + boundary + '\r\nContent-Type: ' + mime + '\r\n\r\n').encode() + data + ('\r\n--' + boundary + '--\r\n').encode()

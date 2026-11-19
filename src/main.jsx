@@ -1,3 +1,5 @@
+import { DraftContext, DraftForm, useDraftState } from "./Drafts.jsx";
+import Performance from "./Performance.jsx";
 import { readApiResponse } from "../shared/http.js";
 import { QuestionInput, MixedQuestionBuilder } from "./QuestionControls.jsx";
 import {
@@ -58,6 +60,7 @@ import {
 } from "lucide-react";
 import "./styles.css";
 const icons = {
+  results: ClipboardCheck,
   dashboard: LayoutDashboard,
   live: Video,
   recording: Play,
@@ -78,6 +81,7 @@ const nav = [
   ["resources", "Learning library"],
   ["lab", "Practice labs"],
   ["tests", "Assessments"],
+  ["results", "Results & performance"],
   ["progress", "My progress"],
   ["fees", "Course & fees"],
   ["tickets", "Queries & concerns"],
@@ -163,6 +167,37 @@ function App() {
     [busy, setBusy] = useState(false),
     [onboarding, setOnboarding] = useState(false),
     [install, setInstall] = useState(null);
+  const navigationHistory = useRef([]),
+    goingBack = useRef(false);
+  useEffect(() => {
+    const entry = { page, adminTab, adminMode };
+    if (goingBack.current) {
+      goingBack.current = false;
+      return;
+    }
+    const last = navigationHistory.current.at(-1);
+    if (!last || JSON.stringify(last) !== JSON.stringify(entry))
+      navigationHistory.current.push(entry);
+    if (navigationHistory.current.length > 50)
+      navigationHistory.current.shift();
+  }, [page, adminTab, adminMode]);
+  function goBack() {
+    if (modal) {
+      setModal(null);
+      return;
+    }
+    if (navigationHistory.current.length > 1) {
+      navigationHistory.current.pop();
+      const previous = navigationHistory.current.at(-1);
+      goingBack.current = true;
+      setPage(previous.page);
+      setAdminTab(previous.adminTab);
+      setAdminMode(previous.adminMode);
+    } else {
+      if (adminMode) setAdminTab("overview");
+      else navigate("dashboard");
+    }
+  }
   const noticeTimer = useRef();
   const firstLogin = useRef(true);
   const [loginRequired, setLoginRequired] = useState(false);
@@ -1177,12 +1212,14 @@ function App() {
             )}
           </>
         );
+      case "results":
+        return <Performance batchId={batchId} viewResult={viewResult} />;
       case "tests":
         return (
           <>
             <PageHeading
               title="Small checks. Lasting knowledge."
-              subtitle="Daily, weekly and monthly assessments based on your approved classes."
+              subtitle="Daily, weekly and completed-topic assessments based on your approved classes."
             />
             <div className="info-strip">
               <ClipboardCheck size={20} />
@@ -1312,7 +1349,7 @@ function App() {
       tickets: "Conversations that matter",
       payments: "Keep fees transparent",
       users: "Your learning community",
-      courses: "Build a reusable curriculum",
+      courses: "Courses & SOPs",
       reports: "See the bigger picture",
       audit: "Campus activity",
     };
@@ -1481,7 +1518,7 @@ function App() {
                       ? "Create assessment"
                       : adminTab === "batches"
                         ? "Create batch"
-                        : "Create course"}
+                        : "+ Add course"}
               </Button>
             ) : adminTab === "payments" ? (
               <Button onClick={() => setModal({ type: "payment" })}>
@@ -1751,7 +1788,15 @@ function App() {
                           </>
                         ) : adminTab === "invitations" ? (
                           <>
-                            <td>{v.email}</td>
+                            <td>
+                              {v.email}
+                              <small className="enrollment-label">
+                                {a.enrollments
+                                  .filter((e) => e.user_id === v.id)
+                                  .map((e) => batchName(e.batch_id))
+                                  .join(" · ") || "No batch assigned"}
+                              </small>
+                            </td>
                             <td>{batchName(v.batch_id)}</td>
                             <td>{v.role}</td>
                             <td>
@@ -1837,6 +1882,16 @@ function App() {
                             </td>
                             <td>{date(v.created)}</td>
                             <td>
+                              {v.role === "student" && (
+                                <button
+                                  className="button secondary"
+                                  onClick={() =>
+                                    setModal({ type: "assign-batch", item: v })
+                                  }
+                                >
+                                  Add to batch
+                                </button>
+                              )}
                               {v.id !== boot.user.id && (
                                 <button
                                   className="text-btn"
@@ -1965,6 +2020,20 @@ function App() {
           </section>
         )}
         {adminTab === "invitations" && (
+          <section className="info-strip">
+            Students get their dedicated course through their batch.{" "}
+            <button className="text-btn" onClick={() => setAdminTab("users")}>
+              Assign existing students
+            </button>
+            <button className="text-btn" onClick={() => edit("courses", null)}>
+              + Add course & SOP
+            </button>
+            <button className="text-btn" onClick={() => edit("batches", null)}>
+              + Create batch
+            </button>
+          </section>
+        )}
+        {adminTab === "invitations" && (
           <div className="info-strip">
             <MessageCircle size={19} />
             <span>
@@ -2061,21 +2130,23 @@ function App() {
               <small>Installable campus</small>
             </div>
             <span>↓</span>
-            <div className="arch-wide">Sites sign-in & access policy</div>
+            <div className="arch-wide">
+              Entra sign-in & campus access policy
+            </div>
             <span>↓</span>
             <div className="arch-wide">
-              Cloudflare Worker API
+              Azure managed Functions API
               <br />
               <small>Roles · enrollment · validation · scoring</small>
             </div>
             <span>↓</span>
             <div>
-              D1 database
+              Central PostgreSQL database
               <br />
               <small>Courses · batches · progress</small>
             </div>
             <div>
-              R2 file storage
+              Private Azure Blob storage
               <br />
               <small>Materials · submissions</small>
             </div>
@@ -2085,556 +2156,614 @@ function App() {
     );
   }
   return (
-    <div className="app-shell">
-      {!onboarding && (
-        <Tour
-          key={boot.user.id + adminMode}
-          user={boot.user}
-          blocked={!!modal}
-          adminMode={adminMode}
-          onNavigate={(p) => {
-            if (adminMode) {
-              setAdminTab(p === "dashboard" ? "overview" : p);
-              navigate("admin");
-            } else navigate(p);
-          }}
+    <DraftContext.Provider
+      value={adminMode ? boot.user.id + ":" + adminTab + ":" + batchId : ""}
+    >
+      <div className="app-shell">
+        {!onboarding && (
+          <Tour
+            key={boot.user.id + adminMode}
+            user={boot.user}
+            blocked={!!modal}
+            adminMode={adminMode}
+            onNavigate={(p) => {
+              if (adminMode) {
+                setAdminTab(p === "dashboard" ? "overview" : p);
+                navigate("admin");
+              } else navigate(p);
+            }}
+          />
+        )}
+        <div
+          className={"mobile-shade " + (mobile ? "visible" : "")}
+          onClick={() => setMobile(false)}
         />
-      )}
-      <div
-        className={"mobile-shade " + (mobile ? "visible" : "")}
-        onClick={() => setMobile(false)}
-      />
-      <aside className={"sidebar " + (mobile ? "open" : "")}>
-        <a
-          className="brand"
-          href="#"
-          onClick={(e) => {
-            e.preventDefault();
-            setAdminMode(false);
-            navigate("dashboard");
-          }}
-        >
-          <div className="logo-window">
-            <img src="/brand.png" alt="ARKS global asia" />
-          </div>
-          <span>
-            INSTITUTES <i /> LEARNING CAMPUS
-          </span>
-        </a>
-        <div className="workspace-label">
-          {adminMode ? "ADMIN WORKSPACE" : "STUDENT WORKSPACE"}
-        </div>
-        <nav>
-          {(adminMode
-            ? [
-                ["admin", "Administration"],
-                ["docs", "Documentation"],
-              ]
-            : nav
-          ).map(([id, label]) => {
-            const Icon = icons[id];
-            return (
-              <button
-                key={id}
-                className={
-                  (
-                    adminMode
-                      ? id === (page === "docs" ? "docs" : "admin")
-                      : page === id
-                  )
-                    ? "active"
-                    : ""
-                }
-                onClick={() => navigate(id)}
-              >
-                <Icon size={19} />
-                <span>{label}</span>
-                {id === "tests" &&
-                  tests.filter((t) => !t.locked).length > 0 && (
-                    <span className="nav-count">
-                      {tests.filter((t) => !t.locked).length}
-                    </span>
-                  )}
-              </button>
-            );
-          })}
-        </nav>
-        <div className="sidebar-bottom">
-          <div className="help-card">
-            <span className="help-dot" />
-            <h3>Big goals. Small steps.</h3>
-            <p>
-              We’re here for every part
-              <br />
-              of your learning journey.
-            </p>
-            <button
-              className="text-btn"
-              onClick={() => {
-                setAdminMode(false);
-                navigate("tickets");
-              }}
-            >
-              Let’s talk <ArrowUpRight size={14} />
-            </button>
-          </div>
-          {boot.user.role === "admin" && (
-            <button
-              className="mode-switch"
-              onClick={() => {
-                setAdminMode(!adminMode);
-                setPage("dashboard");
-              }}
-            >
-              <Settings size={18} />
-              {adminMode ? "Switch to student view" : "Admin portal"}
-              <ArrowUpRight size={15} />
-            </button>
-          )}
-          <button
-            className="user-card"
-            onClick={() => setModal({ type: "profile" })}
+        <aside className={"sidebar " + (mobile ? "open" : "")}>
+          <a
+            className="brand"
+            href="#"
+            onClick={(e) => {
+              e.preventDefault();
+              setAdminMode(false);
+              navigate("dashboard");
+            }}
           >
-            <div className="avatar">
-              {boot.user.name
-                .split(" ")
-                .map((s) => s[0])
-                .slice(0, 2)
-                .join("")
-                .toUpperCase()}
+            <div className="logo-window">
+              <img src="/brand.png" alt="ARKS global asia" />
             </div>
-            <div>
-              <strong>{boot.user.name}</strong>
-              <span>{adminMode ? "Administrator" : "My learning profile"}</span>
-            </div>
-            <ChevronRight size={16} />
-          </button>
-        </div>
-      </aside>
-      <div className="main-shell">
-        <header className="topbar">
-          <div className="row gap">
-            <button
-              className="icon-btn mobile-menu"
-              aria-label="Open navigation"
-              onClick={() => setMobile(true)}
-            >
-              <Menu size={21} />
-            </button>
-            <span className="breadcrumb">
+            <span>
+              INSTITUTES <i /> LEARNING CAMPUS
+            </span>
+          </a>
+          <div className="workspace-label">
+            {adminMode ? "ADMIN WORKSPACE" : "STUDENT WORKSPACE"}
+          </div>
+          <nav>
+            {(adminMode
+              ? [
+                  ["admin", "Administration"],
+                  ["docs", "Documentation"],
+                ]
+              : nav
+            ).map(([id, label]) => {
+              const Icon = icons[id];
+              return (
+                <button
+                  key={id}
+                  className={
+                    (
+                      adminMode
+                        ? id === (page === "docs" ? "docs" : "admin")
+                        : page === id
+                    )
+                      ? "active"
+                      : ""
+                  }
+                  onClick={() => navigate(id)}
+                >
+                  <Icon size={19} />
+                  <span>{label}</span>
+                  {id === "tests" &&
+                    tests.filter((t) => !t.locked).length > 0 && (
+                      <span className="nav-count">
+                        {tests.filter((t) => !t.locked).length}
+                      </span>
+                    )}
+                </button>
+              );
+            })}
+          </nav>
+          <div className="sidebar-bottom">
+            <div className="help-card">
+              <span className="help-dot" />
+              <h3>Big goals. Small steps.</h3>
+              <p>
+                We’re here for every part
+                <br />
+                of your learning journey.
+              </p>
               <button
                 className="text-btn"
                 onClick={() => {
-                  navigate("dashboard");
-                  if (adminMode) setAdminTab("overview");
+                  setAdminMode(false);
+                  navigate("tickets");
                 }}
               >
-                Campus
-              </button>{" "}
-              <ChevronRight size={13} />{" "}
-              <b>
-                {adminMode
-                  ? "Administration"
-                  : nav.find((n) => n[0] === page)?.[1] || "Documentation"}
-              </b>
-            </span>
-          </div>
-          <div className="header-right">
-            {!adminMode && (
-              <label className="search">
-                <Search size={17} />
-                <input
-                  aria-label="Search your resources"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  placeholder="Search your campus…"
-                />
-                <kbd>⌕</kbd>
-              </label>
+                Let’s talk <ArrowUpRight size={14} />
+              </button>
+            </div>
+            {boot.user.role === "admin" && (
+              <button
+                className="mode-switch"
+                onClick={() => {
+                  setAdminMode(!adminMode);
+                  setPage("dashboard");
+                }}
+              >
+                <Settings size={18} />
+                {adminMode ? "Switch to student view" : "Admin portal"}
+                <ArrowUpRight size={15} />
+              </button>
             )}
             <button
-              className="icon-btn notification"
-              aria-label="View campus updates"
-              onClick={() => setModal({ type: "updates" })}
-            >
-              <Bell size={19} />
-              {upcoming.length > 0 && <i />}
-            </button>
-            <span className="header-divider" />
-            <button
-              className="avatar small"
-              aria-label="Open profile"
+              className="user-card"
               onClick={() => setModal({ type: "profile" })}
             >
-              {boot.user.name[0].toUpperCase()}
+              <div className="avatar">
+                {boot.user.name
+                  .split(" ")
+                  .map((s) => s[0])
+                  .slice(0, 2)
+                  .join("")
+                  .toUpperCase()}
+              </div>
+              <div>
+                <strong>{boot.user.name}</strong>
+                <span>
+                  {adminMode ? "Administrator" : "My learning profile"}
+                </span>
+              </div>
+              <ChevronRight size={16} />
             </button>
           </div>
-        </header>
-        <main>
-          <div className="context-bar">
+        </aside>
+        <div className="main-shell">
+          <header className="topbar">
             <div className="row gap">
-              <span className="small-dot" />
-              <span>
-                {adminMode
-                  ? "A little care. A better learning experience."
-                  : "Let’s make today a step forward."}
-              </span>
-            </div>
-            {boot.batches.length > 0 && (
-              <label className="batch-select">
-                <Layers size={15} />
-                <select
-                  aria-label="Select batch"
-                  value={batchId}
-                  onChange={(e) => {
-                    setBatchId(e.target.value);
-                    setSearch("");
+              <button
+                className="text-btn"
+                onClick={goBack}
+                aria-label="Go back"
+              >
+                ← Back
+              </button>
+              <button
+                className="icon-btn mobile-menu"
+                aria-label="Open navigation"
+                onClick={() => setMobile(true)}
+              >
+                <Menu size={21} />
+              </button>
+              <span className="breadcrumb">
+                <button
+                  className="text-btn"
+                  onClick={() => {
+                    navigate("dashboard");
+                    if (adminMode) setAdminTab("overview");
                   }}
                 >
-                  {boot.batches.map((b) => (
-                    <option key={b.id} value={b.id}>
-                      {b.name}
-                    </option>
-                  ))}
-                </select>
-                <ChevronDown size={14} />
-              </label>
-            )}
-          </div>
-          {error && (
-            <div className="error-banner" role="alert">
-              {error}{" "}
-              <button
-                onClick={() => {
-                  setError("");
-                  refresh();
-                }}
-              >
-                Retry
-              </button>
+                  Campus
+                </button>{" "}
+                <ChevronRight size={13} />{" "}
+                <b>
+                  {adminMode
+                    ? "Administration"
+                    : nav.find((n) => n[0] === page)?.[1] || "Documentation"}
+                </b>
+              </span>
             </div>
-          )}
-          {page === "docs" ? <Docs /> : <Content />}
-          <footer>
-            <span>
-              © {new Date().getFullYear()} Arks Global Asia Institutes
-            </span>
-            <div>
-              <button onClick={() => navigate("docs")}>
-                Campus documentation
-              </button>
-              <button
-                onClick={async () => {
-                  await api("auth/logout", {});
-                  setBoot(null);
-                  setLoginRequired(true);
-                }}
-              >
-                Sign out
-              </button>
-              <span>Trust starts here.</span>
-            </div>
-          </footer>
-        </main>
-      </div>
-      {notice && (
-        <div className="toast" role="status">
-          <CheckCircle2 size={18} />
-          {notice}
-          <button
-            aria-label="Dismiss notification"
-            onClick={() => setNotice("")}
-          >
-            <X size={15} />
-          </button>
-        </div>
-      )}
-      {(modal || onboarding) && (
-        <Modal
-          title={
-            onboarding
-              ? "Your next chapter starts here"
-              : modal?.type === "resource"
-                ? modal.item.title
-                : modal?.type === "editor"
-                  ? (modal.item ? "Edit " : "Create ") +
-                    {
-                      invitations: "enrollment",
-                      content: "resource",
-                      tests: "assessment",
-                      batches: "batch",
-                      courses: "course",
-                    }[modal.entity]
-                  : modal?.type === "quiz"
-                    ? modal.test.title
-                    : {
-                        ticket: "How can we help?",
-                        profile: "Your campus profile",
-                        result: "A little feedback goes a long way",
-                        payment: "Record a payment",
-                        review: "Review lab submission",
-                        reply: "Reply to a query",
-                        role: "Change account role",
-                        updates: "Your campus updates",
-                      }[modal?.type] || "Campus"
-          }
-          close={() => {
-            if (onboarding) setOnboarding(false);
-            else if (modal?.type === "quiz") setModal(null);
-            else setModal(null);
-          }}
-        >
-          {onboarding || modal?.type === "profile" ? (
-            <ProfileForm
-              user={boot.user}
-              onboarding={onboarding}
-              save={async (values) => {
-                if (
-                  await act(
-                    () => api("profile", values),
-                    "Profile saved. You’re ready to learn.",
-                  )
-                ) {
-                  setOnboarding(false);
-                  setModal(null);
-                  await init();
-                }
-              }}
-            />
-          ) : modal.type === "resource" ? (
-            <ResourceDetail
-              item={modal.item}
-              complete={done.has(modal.item.id)}
-              submissions={data.submissions.filter(
-                (s) => s.content_id === modal.item.id,
+            <div className="header-right">
+              {boot.user.role === "admin" && (
+                <button
+                  className="mode-switch compact"
+                  onClick={() => {
+                    setAdminMode(!adminMode);
+                    setPage("dashboard");
+                    setModal(null);
+                  }}
+                >
+                  {adminMode ? "Student view" : "Admin portal"}
+                </button>
               )}
-              busy={busy}
-              mark={() =>
-                act(
-                  () =>
-                    api("complete", {
-                      content_id: modal.item.id,
-                      batch_id: batchId,
-                      complete: !done.has(modal.item.id),
-                    }),
-                  "Progress updated",
-                )
-              }
-              submit={async (values) => {
-                if (
-                  await act(
+              {adminMode && (
+                <button
+                  className="text-btn"
+                  onClick={() =>
+                    window.dispatchEvent(new Event("arks-save-draft"))
+                  }
+                >
+                  Save draft
+                </button>
+              )}
+              {!adminMode && (
+                <label className="search">
+                  <Search size={17} />
+                  <input
+                    aria-label="Search your resources"
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    placeholder="Search your campus…"
+                  />
+                  <kbd>⌕</kbd>
+                </label>
+              )}
+              <button
+                className="icon-btn notification"
+                aria-label="View campus updates"
+                onClick={() => setModal({ type: "updates" })}
+              >
+                <Bell size={19} />
+                {upcoming.length > 0 && <i />}
+              </button>
+              <span className="header-divider" />
+              <button
+                className="avatar small"
+                aria-label="Open profile"
+                onClick={() => setModal({ type: "profile" })}
+              >
+                {boot.user.name[0].toUpperCase()}
+              </button>
+            </div>
+          </header>
+          <main>
+            <div className="context-bar">
+              <div className="row gap">
+                <span className="small-dot" />
+                <span>
+                  {adminMode
+                    ? "A little care. A better learning experience."
+                    : "Let’s make today a step forward."}
+                </span>
+              </div>
+              {!adminMode && boot.batches.length > 0 && (
+                <label className="batch-select">
+                  <Layers size={15} />
+                  <select
+                    aria-label="Select batch"
+                    value={batchId}
+                    onChange={(e) => {
+                      setBatchId(e.target.value);
+                      setSearch("");
+                    }}
+                  >
+                    {boot.batches.map((b) => (
+                      <option key={b.id} value={b.id}>
+                        {b.name}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown size={14} />
+                </label>
+              )}
+            </div>
+            {error && (
+              <div className="error-banner" role="alert">
+                {error}{" "}
+                <button
+                  onClick={() => {
+                    setError("");
+                    refresh();
+                  }}
+                >
+                  Retry
+                </button>
+              </div>
+            )}
+            {page === "docs" ? <Docs /> : <Content />}
+            <footer>
+              <span>
+                © {new Date().getFullYear()} Arks Global Asia Institutes
+              </span>
+              <div>
+                <button onClick={() => navigate("docs")}>
+                  Campus documentation
+                </button>
+                <button
+                  onClick={async () => {
+                    await api("auth/logout", {});
+                    setBoot(null);
+                    setLoginRequired(true);
+                  }}
+                >
+                  Sign out
+                </button>
+                <span>Trust starts here.</span>
+              </div>
+            </footer>
+          </main>
+        </div>
+        {notice && (
+          <div className="toast" role="status">
+            <CheckCircle2 size={18} />
+            {notice}
+            <button
+              aria-label="Dismiss notification"
+              onClick={() => setNotice("")}
+            >
+              <X size={15} />
+            </button>
+          </div>
+        )}
+        {(modal || onboarding) && (
+          <Modal
+            title={
+              onboarding
+                ? "Your next chapter starts here"
+                : modal?.type === "resource"
+                  ? modal.item.title
+                  : modal?.type === "editor"
+                    ? (modal.item ? "Edit " : "Create ") +
+                      {
+                        invitations: "enrollment",
+                        content: "resource",
+                        tests: "assessment",
+                        batches: "batch",
+                        courses: "course",
+                      }[modal.entity]
+                    : modal?.type === "quiz"
+                      ? modal.test.title
+                      : {
+                          ticket: "How can we help?",
+                          profile: "Your campus profile",
+                          result: "A little feedback goes a long way",
+                          payment: "Record a payment",
+                          review: "Review lab submission",
+                          reply: "Reply to a query",
+                          role: "Change account role",
+                          updates: "Your campus updates",
+                        }[modal?.type] || "Campus"
+            }
+            close={() => {
+              if (onboarding) setOnboarding(false);
+              else if (modal?.type === "quiz") setModal(null);
+              else setModal(null);
+            }}
+          >
+            {onboarding || modal?.type === "profile" ? (
+              <ProfileForm
+                user={boot.user}
+                onboarding={onboarding}
+                save={async (values) => {
+                  if (
+                    await act(
+                      () => api("profile", values),
+                      "Profile saved. You’re ready to learn.",
+                    )
+                  ) {
+                    setOnboarding(false);
+                    setModal(null);
+                    await init();
+                  }
+                }}
+              />
+            ) : modal.type === "resource" ? (
+              <ResourceDetail
+                item={modal.item}
+                complete={done.has(modal.item.id)}
+                submissions={data.submissions.filter(
+                  (s) => s.content_id === modal.item.id,
+                )}
+                busy={busy}
+                mark={() =>
+                  act(
                     () =>
-                      api("submissions", {
-                        ...values,
+                      api("complete", {
                         content_id: modal.item.id,
                         batch_id: batchId,
+                        complete: !done.has(modal.item.id),
                       }),
-                    "Lab submitted for review.",
+                    "Progress updated",
                   )
-                )
-                  setModal(null);
-              }}
-            />
-          ) : modal.type === "ticket" ? (
-            <SimpleForm
-              fields={[
-                ["subject", "Subject", "text"],
-                ["body", "Tell us a little more", "textarea"],
-              ]}
-              save={async (values) => {
-                if (
-                  await act(
-                    () => api("tickets", { ...values, batch_id: batchId }),
-                    "Your query has been sent to the team.",
-                  )
-                )
-                  setModal(null);
-              }}
-              label="Send query"
-            />
-          ) : modal.type === "quiz" ? (
-            <Quiz
-              test={modal.test}
-              finish={async (answers) => {
-                setBusy(true);
-                try {
-                  const r = await api("tests/submit", {
-                    attempt_id: modal.test.id,
-                    answers,
-                  });
-                  setModal({ type: "result", result: r });
-                  await refresh();
-                } catch (e) {
-                  toast(e.message);
-                } finally {
-                  setBusy(false);
                 }
-              }}
-              busy={busy}
-            />
-          ) : modal.type === "result" ? (
-            <Result
-              result={modal.result}
-              onRefresh={() => viewResult(modal.result.id)}
-            />
-          ) : modal.type === "editor" ? (
-            <Editor
-              entity={modal.entity}
-              item={modal.item}
-              data={adminData}
-              save={async (values) => {
-                if (
-                  await act(
-                    () => api("admin/save", { entity: modal.entity, values }),
-                    "Changes saved.",
-                  )
-                ) {
-                  setModal(null);
-                  await init();
-                }
-              }}
-            />
-          ) : modal.type === "payment" ? (
-            <PaymentForm
-              data={adminData}
-              save={async (values) => {
-                if (
-                  await act(
-                    () => api("admin/payment", values),
-                    "Payment recorded.",
-                  )
-                )
-                  setModal(null);
-              }}
-            />
-          ) : modal.type === "review" ? (
-            <>
-              <p className="prewrap">{modal.item.body}</p>
-              {modal.item.file_id && (
-                <a
-                  className="button secondary"
-                  href={"/api/files/" + modal.item.file_id}
-                >
-                  <Download size={15} /> Download submission
-                </a>
-              )}
-              <SimpleForm
-                initial={modal.item}
-                fields={[
-                  [
-                    "status",
-                    "Review status",
-                    "select",
-                    ["submitted", "accepted", "revision_requested"],
-                  ],
-                  ["feedback", "Feedback for the student", "textarea"],
-                ]}
-                save={async (values) => {
+                submit={async (values) => {
                   if (
                     await act(
                       () =>
-                        api("admin/review", { ...values, id: modal.item.id }),
-                      "Review saved.",
-                    )
-                  )
-                    setModal(null);
-                }}
-                label="Save review"
-              />
-            </>
-          ) : modal.type === "reply" ? (
-            <>
-              <h3>{modal.item.subject}</h3>
-              <p className="prewrap">{modal.item.body}</p>
-              <SimpleForm
-                initial={modal.item}
-                fields={[
-                  ["reply", "Your reply", "textarea"],
-                  ["status", "Status", "select", ["open", "resolved"]],
-                ]}
-                save={async (values) => {
-                  if (
-                    await act(
-                      () =>
-                        api("admin/reply", { ...values, id: modal.item.id }),
-                      "Reply saved.",
-                    )
-                  )
-                    setModal(null);
-                }}
-                label="Send reply"
-              />
-            </>
-          ) : modal.type === "role" ? (
-            <>
-              <p>
-                Update permissions for <b>{modal.item.name}</b>. Administrators
-                can manage all students, content and fee records.
-              </p>
-              <SimpleForm
-                initial={modal.item}
-                fields={[
-                  ["role", "Account role", "select", ["student", "admin"]],
-                ]}
-                save={async (values) => {
-                  if (
-                    await act(
-                      () =>
-                        api("admin/role", {
-                          id: modal.item.id,
-                          role: values.role,
+                        api("submissions", {
+                          ...values,
+                          content_id: modal.item.id,
+                          batch_id: batchId,
                         }),
-                      "Role updated.",
+                      "Lab submitted for review.",
                     )
                   )
                     setModal(null);
                 }}
-                label="Update role"
               />
-            </>
-          ) : modal.type === "updates" ? (
-            <>
-              <p>Your next classes and latest feedback, in one place.</p>
-              {upcoming.length ? (
-                upcoming.slice(0, 5).map((s) => (
-                  <div className="result-row" key={s.id}>
-                    <div>
-                      <h3>{s.title}</h3>
-                      <p>{date(s.starts_at)}</p>
-                    </div>
-                    <Video size={18} />
-                  </div>
-                ))
-              ) : (
-                <p>No upcoming sessions have been scheduled.</p>
-              )}
-              {data?.submissions
-                .filter((s) => s.feedback)
-                .map((s) => (
-                  <div className="reply" key={s.id}>
-                    <b>Lab feedback</b>
-                    <p>{s.feedback}</p>
-                  </div>
-                ))}
-              <Button
-                secondary
-                onClick={async () => {
-                  if (install) {
-                    await install.prompt();
-                    setInstall(null);
-                  } else
-                    toast(
-                      "On Android, open this site in Chrome and choose ⋮ → Add to Home screen → Install.",
-                    );
+            ) : modal.type === "ticket" ? (
+              <SimpleForm
+                fields={[
+                  ["subject", "Subject", "text"],
+                  ["body", "Tell us a little more", "textarea"],
+                ]}
+                save={async (values) => {
+                  if (
+                    await act(
+                      () => api("tickets", { ...values, batch_id: batchId }),
+                      "Your query has been sent to the team.",
+                    )
+                  )
+                    setModal(null);
                 }}
-              >
-                Install campus on your phone <Download size={15} />
-              </Button>
-            </>
-          ) : null}
-        </Modal>
-      )}
-    </div>
+                label="Send query"
+              />
+            ) : modal.type === "quiz" ? (
+              <Quiz
+                test={modal.test}
+                finish={async (answers) => {
+                  setBusy(true);
+                  try {
+                    const r = await api("tests/submit", {
+                      attempt_id: modal.test.id,
+                      answers,
+                    });
+                    setModal({ type: "result", result: r });
+                    await refresh();
+                  } catch (e) {
+                    toast(e.message);
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+                busy={busy}
+              />
+            ) : modal.type === "result" ? (
+              <Result
+                result={modal.result}
+                onRefresh={() => viewResult(modal.result.id)}
+              />
+            ) : modal.type === "editor" ? (
+              <Editor
+                entity={modal.entity}
+                item={modal.item}
+                data={adminData}
+                save={async (values) => {
+                  if (
+                    await act(
+                      () => api("admin/save", { entity: modal.entity, values }),
+                      "Changes saved.",
+                    )
+                  ) {
+                    setModal(null);
+                    await init();
+                    return true;
+                  }
+                  return false;
+                }}
+              />
+            ) : modal.type === "assign-batch" ? (
+              <AssignBatch
+                student={modal.item}
+                data={adminData}
+                save={async (values) => {
+                  if (
+                    await act(
+                      () =>
+                        api("admin/enroll-student", {
+                          ...values,
+                          user_id: modal.item.id,
+                        }),
+                      "Batch assigned.",
+                    )
+                  ) {
+                    setModal(null);
+                    await init();
+                  }
+                }}
+              />
+            ) : modal.type === "payment" ? (
+              <PaymentForm
+                data={adminData}
+                save={async (values) => {
+                  if (
+                    await act(
+                      () => api("admin/payment", values),
+                      "Payment recorded.",
+                    )
+                  )
+                    setModal(null);
+                }}
+              />
+            ) : modal.type === "review" ? (
+              <>
+                <p className="prewrap">{modal.item.body}</p>
+                {modal.item.file_id && (
+                  <a
+                    className="button secondary"
+                    href={"/api/files/" + modal.item.file_id}
+                  >
+                    <Download size={15} /> Download submission
+                  </a>
+                )}
+                <SimpleForm
+                  initial={modal.item}
+                  fields={[
+                    [
+                      "status",
+                      "Review status",
+                      "select",
+                      ["submitted", "accepted", "revision_requested"],
+                    ],
+                    ["feedback", "Feedback for the student", "textarea"],
+                  ]}
+                  save={async (values) => {
+                    if (
+                      await act(
+                        () =>
+                          api("admin/review", { ...values, id: modal.item.id }),
+                        "Review saved.",
+                      )
+                    )
+                      setModal(null);
+                  }}
+                  label="Save review"
+                />
+              </>
+            ) : modal.type === "reply" ? (
+              <>
+                <h3>{modal.item.subject}</h3>
+                <p className="prewrap">{modal.item.body}</p>
+                <SimpleForm
+                  initial={modal.item}
+                  fields={[
+                    ["reply", "Your reply", "textarea"],
+                    ["status", "Status", "select", ["open", "resolved"]],
+                  ]}
+                  save={async (values) => {
+                    if (
+                      await act(
+                        () =>
+                          api("admin/reply", { ...values, id: modal.item.id }),
+                        "Reply saved.",
+                      )
+                    )
+                      setModal(null);
+                  }}
+                  label="Send reply"
+                />
+              </>
+            ) : modal.type === "role" ? (
+              <>
+                <p>
+                  Update permissions for <b>{modal.item.name}</b>.
+                  Administrators can manage all students, content and fee
+                  records.
+                </p>
+                <SimpleForm
+                  initial={modal.item}
+                  fields={[
+                    ["role", "Account role", "select", ["student", "admin"]],
+                  ]}
+                  save={async (values) => {
+                    if (
+                      await act(
+                        () =>
+                          api("admin/role", {
+                            id: modal.item.id,
+                            role: values.role,
+                          }),
+                        "Role updated.",
+                      )
+                    )
+                      setModal(null);
+                  }}
+                  label="Update role"
+                />
+              </>
+            ) : modal.type === "updates" ? (
+              <>
+                <p>Your next classes and latest feedback, in one place.</p>
+                {upcoming.length ? (
+                  upcoming.slice(0, 5).map((s) => (
+                    <div className="result-row" key={s.id}>
+                      <div>
+                        <h3>{s.title}</h3>
+                        <p>{date(s.starts_at)}</p>
+                      </div>
+                      <Video size={18} />
+                    </div>
+                  ))
+                ) : (
+                  <p>No upcoming sessions have been scheduled.</p>
+                )}
+                {data?.submissions
+                  .filter((s) => s.feedback)
+                  .map((s) => (
+                    <div className="reply" key={s.id}>
+                      <b>Lab feedback</b>
+                      <p>{s.feedback}</p>
+                    </div>
+                  ))}
+                <Button
+                  secondary
+                  onClick={async () => {
+                    if (install) {
+                      await install.prompt();
+                      setInstall(null);
+                    } else
+                      toast(
+                        "On Android, open this site in Chrome and choose ⋮ → Add to Home screen → Install.",
+                      );
+                  }}
+                >
+                  Install campus on your phone <Download size={15} />
+                </Button>
+              </>
+            ) : null}
+          </Modal>
+        )}
+      </div>
+    </DraftContext.Provider>
   );
 }
 function Modal({ title, close, children }) {
@@ -2724,7 +2853,7 @@ function SimpleForm({
     }
   }
   return (
-    <form className="form" onSubmit={submit}>
+    <DraftForm className="form" onSubmit={submit}>
       {children}
       {fields.map(([key, label, type, opts, help]) => (
         <label key={key}>
@@ -2776,7 +2905,7 @@ function SimpleForm({
         {saving ? <LoaderCircle size={16} className="spin" /> : null}
         {saving ? "Saving…" : label}
       </Button>
-    </form>
+    </DraftForm>
   );
 }
 function ProfileForm({ user, save, onboarding }) {
@@ -2913,7 +3042,7 @@ function ResourceDetail({
             Share your approach, commands and repository link. Your instructor
             will review your submission.
           </p>
-          <form
+          <DraftForm
             className="form"
             onSubmit={async (e) => {
               e.preventDefault();
@@ -2939,7 +3068,7 @@ function ResourceDetail({
             <Button disabled={saving} type="submit">
               {saving ? "Submitting…" : "Submit lab"} <ArrowRight size={16} />
             </Button>
-          </form>
+          </DraftForm>
           {submissions.length > 0 && (
             <>
               <h3 className="spaced">Your submissions</h3>
@@ -3228,20 +3357,23 @@ function Editor({ entity, item, data, save }) {
       ),
     },
   };
-  const [v, setV] = useState(() => {
-      const val = { ...defaults[entity], ...item };
-      if (entity === "batches")
-        val.drive_folder =
-          data.automation_sources?.find((s) => s.batch_id === item?.id)
-            ?.folder_input || "";
-      if (val.fee !== undefined) val.fee = val.fee / 100;
-      if (val.starts_at) val.starts_at = val.starts_at.slice(0, 16);
-      if (val.questions)
-        val.questions = JSON.stringify(JSON.parse(val.questions), null, 2);
-      if (val.syllabus)
-        val.syllabus = JSON.stringify(JSON.parse(val.syllabus), null, 2);
-      return val;
-    }),
+  const [v, setV, clearEditorDraft] = useDraftState(
+      "editor:" + entity + ":" + (item?.id || "new"),
+      () => {
+        const val = { ...defaults[entity], ...item };
+        if (entity === "batches")
+          val.drive_folder =
+            data.automation_sources?.find((s) => s.batch_id === item?.id)
+              ?.folder_input || "";
+        if (val.fee !== undefined) val.fee = val.fee / 100;
+        if (val.starts_at) val.starts_at = val.starts_at.slice(0, 16);
+        if (val.questions)
+          val.questions = JSON.stringify(JSON.parse(val.questions), null, 2);
+        if (val.syllabus)
+          val.syllabus = JSON.stringify(JSON.parse(val.syllabus), null, 2);
+        return val;
+      },
+    ),
     [saving, setSaving] = useState(false);
   const courseOpts = data.courses.map((c) => [c.id, c.title]),
     batchOpts = data.batches
@@ -3299,19 +3431,25 @@ function Editor({ entity, item, data, save }) {
     </label>
   );
   return (
-    <form
+    <DraftForm
+      draftKey={"editor:" + entity + ":" + (item?.id || "new")}
       className="form"
       onSubmit={async (e) => {
         e.preventDefault();
         setSaving(true);
         try {
-          await save({
+          const applied = await save({
             ...v,
             ...(v.starts_at ? { starts_at: v.starts_at + "Z" } : {}),
             ...(v.fee !== undefined
               ? { fee: Math.round(Number(v.fee) * 100) }
               : {}),
           });
+          if (applied) {
+            clearEditorDraft();
+            return true;
+          }
+          return false;
         } finally {
           setSaving(false);
         }
@@ -3321,6 +3459,18 @@ function Editor({ entity, item, data, save }) {
         <>
           {field("title", "Course title")}
           {field("description", "Description", "textarea")}
+          <label>
+            Course SOP · PDF or DOCX
+            <FileUpload
+              accept=".pdf,.docx"
+              onUploaded={(f) => setV({ ...v, sop_file_id: f.id })}
+            />
+            <small>
+              {v.sop_file_id
+                ? "SOP attached. Save the course to apply it."
+                : "Upload the course SOP; all batches of this course can use it."}
+            </small>
+          </label>
           {field("fee", "Default fee (major currency units)", "number")}
           {field(
             "currency",
@@ -3465,6 +3615,7 @@ function Editor({ entity, item, data, save }) {
             ["daily", "Daily"],
             ["weekly", "Weekly"],
             ["monthly", "Monthly"],
+            ["topic", "Completed topic"],
           ])}
           <div className="form-grid">
             {field("topic_order", "Unlock after topic", "number")}
@@ -3493,7 +3644,7 @@ function Editor({ entity, item, data, save }) {
             }[entity]}
         <Check size={16} />
       </Button>
-    </form>
+    </DraftForm>
   );
 }
 function PaymentForm({ data, save }) {
@@ -3577,5 +3728,67 @@ function SyllabusBuilder({ value, onChange }) {
         <Plus size={15} /> Add topic
       </Button>
     </div>
+  );
+}
+
+function AssignBatch({ student, data, save }) {
+  const [batch, setBatch] = useState(data.batches[0]?.id || ""),
+    [fee, setFee] = useState(""),
+    [busy, setBusy] = useState(false);
+  const course = data.courses.find(
+    (c) => c.id === data.batches.find((b) => b.id === batch)?.course_id,
+  );
+  return (
+    <DraftForm
+      className="form"
+      onSubmit={async (e) => {
+        e.preventDefault();
+        setBusy(true);
+        try {
+          await save({
+            batch_id: batch,
+            ...(fee !== "" ? { fee: Math.round(Number(fee) * 100) } : {}),
+          });
+        } finally {
+          setBusy(false);
+        }
+      }}
+    >
+      <h3>Assign {student.name} to a course batch</h3>
+      <label>
+        Batch
+        <select
+          required
+          value={batch}
+          onChange={(e) => setBatch(e.target.value)}
+        >
+          <option value="">Choose a batch</option>
+          {data.batches.map((b) => (
+            <option key={b.id} value={b.id}>
+              {b.name}
+              {data.enrollments.some(
+                (e) => e.user_id === student.id && e.batch_id === b.id,
+              )
+                ? " · already enrolled"
+                : ""}
+            </option>
+          ))}
+        </select>
+      </label>
+      <p>Course: {course?.title || "Select a batch"}</p>
+      <label>
+        Fee in rupees · leave blank for course default
+        <input
+          type="number"
+          min="0"
+          step="0.01"
+          value={fee}
+          onChange={(e) => setFee(e.target.value)}
+        />
+      </label>
+      <button className="button" disabled={busy || !batch}>
+        Save batch assignment
+      </button>
+    </DraftForm>
   );
 }

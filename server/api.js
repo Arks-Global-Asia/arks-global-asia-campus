@@ -1,3 +1,4 @@
+import { learningRoutes, planAssessments } from "./learning.js";
 import {
   validQuestion,
   normalizeQuestions,
@@ -192,6 +193,8 @@ async function handle(req, env) {
     fail(404, "Authentication endpoint not found.");
   }
   const u = await identity(req, db, env);
+  const learning = await learningRoutes(req, env, u);
+  if (learning) return learning;
   const enhanced = await featureRoutes(req, env, u);
   if (enhanced) return enhanced;
   if (p.startsWith("/api/admin/automation/"))
@@ -370,7 +373,12 @@ async function handle(req, env) {
     );
     if (
       d.file_id &&
-      JSON.parse(submissionBatch.config || "{}").submission_folder
+      (JSON.parse(submissionBatch.config || "{}").submission_folder ||
+        (await one(
+          db,
+          "SELECT folder_id FROM automation_sources WHERE batch_id=? AND enabled=1",
+          d.batch_id,
+        )))
     ) {
       const f = await one(db, "SELECT name FROM files WHERE id=?", d.file_id);
       if (!/\.(pdf|docx)$/i.test(f.name))
@@ -690,7 +698,7 @@ async function handle(req, env) {
   }
   if (p.startsWith("/api/admin")) {
     admin(u);
-    return adminApi(req, db, u, p);
+    return adminApi(req, db, u, p, env);
   }
   fail(404, "Endpoint not found.");
 }
@@ -706,7 +714,7 @@ async function checkFile(db, u, fid) {
   )
     fail(400, "Upload a valid file first.");
 }
-async function adminApi(req, db, u, p) {
+async function adminApi(req, db, u, p, env) {
   if (p === "/api/admin/data" && req.method === "GET") {
     const names = [
       "users",
@@ -744,6 +752,16 @@ async function adminApi(req, db, u, p) {
       key = v.id || id();
     let fields;
     if (kind === "courses") {
+      if (v.sop_file_id) {
+        await checkFile(db, u, v.sop_file_id);
+        const file = await one(
+          db,
+          "SELECT name FROM files WHERE id=?",
+          v.sop_file_id,
+        );
+        if (!/\.(pdf|docx)$/i.test(file.name))
+          fail(400, "Course SOP must be PDF or DOCX.");
+      }
       let syllabus;
       try {
         syllabus = JSON.parse(v.syllabus);
@@ -886,7 +904,7 @@ async function adminApi(req, db, u, p) {
           "Each question needs a supported type, valid answer key and a grading rubric for written answers.",
         );
       }
-      if (!["daily", "weekly", "monthly"].includes(v.kind))
+      if (!["daily", "weekly", "monthly", "topic"].includes(v.kind))
         fail(400, "Choose a test type.");
       if (!(await one(db, "SELECT id FROM courses WHERE id=?", v.course_id)))
         fail(400, "Choose a course.");
@@ -914,6 +932,53 @@ async function adminApi(req, db, u, p) {
       v.drive_folder.trim()
     )
       await saveSource(db, key, v.drive_folder, true);
+    if (kind === "invitations") {
+      const person = await one(
+        db,
+        "SELECT id FROM users WHERE email=?",
+        fields.email,
+      );
+      if (person)
+        await run(
+          db,
+          "INSERT OR IGNORE INTO enrollments(id,user_id,batch_id,fee,created) VALUES (?,?,?,?,?)",
+          id(),
+          person.id,
+          fields.batch_id,
+          fields.fee,
+          now(),
+        );
+    }
+    if (kind === "courses" && v.sop_file_id) {
+      await checkFile(db, u, v.sop_file_id);
+      const fid = await one(
+        db,
+        "SELECT name FROM files WHERE id=?",
+        v.sop_file_id,
+      );
+      if (!/\.(pdf|docx)$/i.test(fid.name))
+        fail(400, "Course SOP must be PDF or DOCX.");
+      const sop = await one(
+        db,
+        "SELECT id FROM content WHERE course_id=? AND batch_id IS NULL AND kind='sop'",
+        key,
+      );
+      await run(
+        db,
+        "INSERT INTO content(id,course_id,kind,title,topic,topic_order,body,file_id,published,created) VALUES (?,?,'sop',?,'Course SOP',1,'',?,1,?) ON CONFLICT(id) DO UPDATE SET file_id=excluded.file_id,title=excluded.title",
+        sop?.id || id(),
+        key,
+        fields.title + " · SOP",
+        v.sop_file_id,
+        now(),
+      );
+    }
+    if (kind === "content" && fields.published && fields.batch_id) {
+      await planAssessments(env, fields.batch_id);
+      try {
+        await wakeEngine(env);
+      } catch {}
+    }
     await log(db, u, `save:${kind}`, key);
     return json({ id: key });
   }

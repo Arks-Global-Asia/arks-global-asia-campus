@@ -96,6 +96,25 @@ test("student and administrator DOM workflows render and assessment interaction 
     await settle(() =>
       document.querySelector('[aria-label="Close dialog"]').click(),
     );
+    await settle(() => button("Session planner").click());
+    const draftTitle = document.querySelector('input[name="title"]');
+    draftTitle.value = "A class draft that survives switching tabs";
+    await settle(() =>
+      draftTitle.dispatchEvent(
+        new dom.window.Event("input", { bubbles: true }),
+      ),
+    );
+    await settle(() =>
+      draftTitle.dispatchEvent(
+        new dom.window.Event("change", { bubbles: true }),
+      ),
+    );
+    await settle(() => button("Batch experience").click());
+    await settle(() => button("Session planner").click());
+    assert.equal(
+      document.querySelector('input[name="title"]').value,
+      "A class draft that survives switching tabs",
+    );
     await settle(() => button("Batches").click());
     assert.match(document.body.textContent, /Manage your batches/);
     await settle(() => button("Create batch").click());

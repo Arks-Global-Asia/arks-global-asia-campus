@@ -54,7 +54,7 @@ async function session(db, user) {
   const raw = uid() + uid();
   await run(
     db,
-    "INSERT INTO auth_sessions VALUES (?,?,?)",
+    "INSERT INTO auth_sessions (id,user_id,expires) VALUES (?,?,?)",
     await hash(raw),
     user.id,
     new Date(Date.now() + 8 * 3600000).toISOString(),
@@ -98,7 +98,7 @@ export async function authRoutes(req, env) {
       time = Date.now();
     await run(
       db,
-      "INSERT INTO auth_limits VALUES (?,0,?) ON CONFLICT(id) DO UPDATE SET attempts=CASE WHEN reset_at<? THEN 0 ELSE attempts END,reset_at=CASE WHEN reset_at<? THEN excluded.reset_at ELSE reset_at END",
+      "INSERT INTO auth_limits (id,attempts,reset_at) VALUES (?,0,?) ON CONFLICT(id) DO UPDATE SET attempts=CASE WHEN auth_limits.reset_at<? THEN 0 ELSE auth_limits.attempts END,reset_at=CASE WHEN auth_limits.reset_at<? THEN excluded.reset_at ELSE auth_limits.reset_at END",
       key,
       time + 15 * 60000,
       time,
@@ -133,7 +133,7 @@ export async function authRoutes(req, env) {
       nonce = uid();
     await run(
       db,
-      "INSERT INTO auth_states VALUES (?,?,?)",
+      "INSERT INTO auth_states (id,verifier,expires) VALUES (?,?,?)",
       await hash(state),
       nonce,
       new Date(Date.now() + 600000).toISOString(),
@@ -295,7 +295,7 @@ export async function setAdminPassword(db, u, d) {
   const salt = uid() + uid();
   await run(
     db,
-    "INSERT INTO admin_credentials VALUES (?,?,?) ON CONFLICT(user_id) DO UPDATE SET salt=excluded.salt,password_hash=excluded.password_hash",
+    "INSERT INTO admin_credentials (user_id,salt,password_hash) VALUES (?,?,?) ON CONFLICT(user_id) DO UPDATE SET salt=excluded.salt,password_hash=excluded.password_hash",
     target.id,
     salt,
     await passwordHash(d.password, salt),

@@ -84619,7 +84619,7 @@ async function session(db, user) {
   const raw = uid() + uid();
   await run(
     db,
-    "INSERT INTO auth_sessions VALUES (?,?,?)",
+    "INSERT INTO auth_sessions (id,user_id,expires) VALUES (?,?,?)",
     await hash(raw),
     user.id,
     new Date(Date.now() + 8 * 36e5).toISOString()
@@ -84657,7 +84657,7 @@ async function authRoutes(req, env) {
     const key = await hash(email + ":" + clientIp(req)), time = Date.now();
     await run(
       db,
-      "INSERT INTO auth_limits VALUES (?,0,?) ON CONFLICT(id) DO UPDATE SET attempts=CASE WHEN reset_at<? THEN 0 ELSE attempts END,reset_at=CASE WHEN reset_at<? THEN excluded.reset_at ELSE reset_at END",
+      "INSERT INTO auth_limits (id,attempts,reset_at) VALUES (?,0,?) ON CONFLICT(id) DO UPDATE SET attempts=CASE WHEN auth_limits.reset_at<? THEN 0 ELSE auth_limits.attempts END,reset_at=CASE WHEN auth_limits.reset_at<? THEN excluded.reset_at ELSE auth_limits.reset_at END",
       key,
       time + 15 * 6e4,
       time,
@@ -84688,7 +84688,7 @@ async function authRoutes(req, env) {
     const state3 = uid() + uid(), nonce = uid();
     await run(
       db,
-      "INSERT INTO auth_states VALUES (?,?,?)",
+      "INSERT INTO auth_states (id,verifier,expires) VALUES (?,?,?)",
       await hash(state3),
       nonce,
       new Date(Date.now() + 6e5).toISOString()
@@ -84834,7 +84834,7 @@ async function setAdminPassword(db, u, d) {
   const salt = uid() + uid();
   await run(
     db,
-    "INSERT INTO admin_credentials VALUES (?,?,?) ON CONFLICT(user_id) DO UPDATE SET salt=excluded.salt,password_hash=excluded.password_hash",
+    "INSERT INTO admin_credentials (user_id,salt,password_hash) VALUES (?,?,?) ON CONFLICT(user_id) DO UPDATE SET salt=excluded.salt,password_hash=excluded.password_hash",
     target.id,
     salt,
     await passwordHash(d.password, salt)
@@ -85352,7 +85352,7 @@ async function featureRoutes(req, env, u) {
         await run(db, "DELETE FROM group_members WHERE group_id=?", group);
       await run(
         db,
-        "INSERT INTO access_groups VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,google_group=excluded.google_group",
+        "INSERT INTO access_groups (id,name,google_group,batch_id) VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,google_group=excluded.google_group",
         group,
         d.name.trim().slice(0, 200),
         remote,
@@ -85379,7 +85379,7 @@ async function featureRoutes(req, env, u) {
     }
     await db.batch([
       db.prepare(
-        "INSERT INTO access_groups VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,google_group=excluded.google_group"
+        "INSERT INTO access_groups (id,name,google_group,batch_id) VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,google_group=excluded.google_group"
       ).bind(
         group,
         d.name.trim().slice(0, 200),
@@ -85388,7 +85388,7 @@ async function featureRoutes(req, env, u) {
       ),
       db.prepare("DELETE FROM group_members WHERE group_id=?").bind(group),
       ...emails.map(
-        (email) => db.prepare("INSERT INTO group_members VALUES (?,?)").bind(group, email)
+        (email) => db.prepare("INSERT INTO group_members (group_id,email) VALUES (?,?)").bind(group, email)
       )
     ]);
     for (const email of emails) {
@@ -85610,7 +85610,7 @@ async function engineRoutes(req, env) {
     await db.batch([
       db.prepare("DELETE FROM group_members WHERE group_id=?").bind(g.id),
       ...emails.map(
-        (e) => db.prepare("INSERT INTO group_members VALUES (?,?)").bind(g.id, e)
+        (e) => db.prepare("INSERT INTO group_members (group_id,email) VALUES (?,?)").bind(g.id, e)
       )
     ]);
     for (const email of emails) {

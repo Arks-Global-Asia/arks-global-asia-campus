@@ -605,7 +605,7 @@ export async function featureRoutes(req, env, u) {
         await run(db, "DELETE FROM group_members WHERE group_id=?", group);
       await run(
         db,
-        "INSERT INTO access_groups VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,google_group=excluded.google_group",
+        "INSERT INTO access_groups (id,name,google_group,batch_id) VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,google_group=excluded.google_group",
         group,
         d.name.trim().slice(0, 200),
         remote,
@@ -635,7 +635,7 @@ export async function featureRoutes(req, env, u) {
     await db.batch([
       db
         .prepare(
-          "INSERT INTO access_groups VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,google_group=excluded.google_group",
+          "INSERT INTO access_groups (id,name,google_group,batch_id) VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,google_group=excluded.google_group",
         )
         .bind(
           group,
@@ -645,7 +645,7 @@ export async function featureRoutes(req, env, u) {
         ),
       db.prepare("DELETE FROM group_members WHERE group_id=?").bind(group),
       ...emails.map((email) =>
-        db.prepare("INSERT INTO group_members VALUES (?,?)").bind(group, email),
+        db.prepare("INSERT INTO group_members (group_id,email) VALUES (?,?)").bind(group, email),
       ),
     ]);
     for (const email of emails) {
@@ -889,7 +889,7 @@ export async function engineRoutes(req, env) {
     await db.batch([
       db.prepare("DELETE FROM group_members WHERE group_id=?").bind(g.id),
       ...emails.map((e) =>
-        db.prepare("INSERT INTO group_members VALUES (?,?)").bind(g.id, e),
+        db.prepare("INSERT INTO group_members (group_id,email) VALUES (?,?)").bind(g.id, e),
       ),
     ]);
     for (const email of emails) {

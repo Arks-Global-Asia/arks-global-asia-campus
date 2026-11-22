@@ -84976,8 +84976,9 @@ async function wakeEngine(env, source_id = null) {
   const u = new URL(env.AZURE_ENGINE_URL);
   if (u.protocol !== "https:" || !u.hostname.endsWith(".azurewebsites.net"))
     fail(503, "Invalid Azure engine configuration.");
+  let r;
   try {
-    const r = await fetch(u, {
+    r = await fetch(u, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -84987,18 +84988,25 @@ async function wakeEngine(env, source_id = null) {
       redirect: "error",
       signal: AbortSignal.timeout(2e4)
     });
-    if (!r.ok)
-      fail(
-        503,
-        "Azure did not accept the request. Try again or check the engine."
-      );
-    return true;
   } catch {
     fail(
       503,
       "Azure engine could not be reached. The saved job can be retried."
     );
   }
+  if (!r.ok) {
+    let snippet = "";
+    try {
+      const raw = await r.text();
+      snippet = raw.replace(/[\r\n\t]+/g, " ").replace(/(?:authorization|x-functions-key|x-arks-importer-token|cookie|set-cookie)\s*:\s*\S+/gi, "[redacted]").trim().slice(0, 200);
+    } catch {
+    }
+    fail(
+      503,
+      `Azure rejected dispatch (HTTP ${r.status})${snippet ? `: ${snippet}` : ". Try again or check the engine."}`
+    );
+  }
+  return true;
 }
 async function queueJob(db, kind, batch, entity, payload) {
   const existing = await one(
@@ -85279,6 +85287,10 @@ async function featureRoutes(req, env, u) {
         db,
         "SELECT id,kind,batch_id,entity_id,status,error,created,finished FROM engine_jobs ORDER BY created DESC LIMIT 100"
       ),
+      drive_sops: await rows(
+        db,
+        "SELECT i.id,i.title,i.kind,i.status,i.file_id,i.source_url,s.batch_id FROM import_items i JOIN automation_sources s ON s.id=i.source_id WHERE i.status IN ('pending','published') AND (i.kind='sop' OR lower(i.title) LIKE '%sop%' OR lower(i.title) LIKE '%syllabus%' OR lower(i.title) LIKE '%roadmap%' OR lower(i.title) LIKE '%curriculum%') ORDER BY i.created DESC LIMIT 50"
+      ),
       engine_ready: !!(env.AZURE_ENGINE_URL && env.AZURE_ENGINE_KEY),
       google_ready: !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET),
       auth_mode: env.AUTH_MODE || "google"
@@ -85290,12 +85302,23 @@ async function featureRoutes(req, env, u) {
     staff(u);
     const d = await req.json();
     await member(db, u, d.batch_id);
-    await run(
-      db,
-      "UPDATE batches SET config=? WHERE id=?",
-      JSON.stringify(safeConfig(d)),
-      d.batch_id
-    );
+    if (d.covered !== void 0) {
+      const cov = Math.max(0, Math.min(100, Math.floor(Number(d.covered) || 0)));
+      await run(
+        db,
+        "UPDATE batches SET config=?, covered=? WHERE id=?",
+        JSON.stringify(safeConfig(d)),
+        cov,
+        d.batch_id
+      );
+    } else {
+      await run(
+        db,
+        "UPDATE batches SET config=? WHERE id=?",
+        JSON.stringify(safeConfig(d)),
+        d.batch_id
+      );
+    }
     return json({ ok: true });
   }
   if (p === "/api/admin/access" && req.method === "POST") {
@@ -85513,12 +85536,12 @@ async function featureRoutes(req, env, u) {
     const d = await req.json(), b = await member(db, u, d.batch_id);
     const c = await one(
       db,
-      "SELECT * FROM content WHERE id=? AND kind='sop' AND published=1 AND course_id=? AND (batch_id=? OR batch_id IS NULL)",
+      "SELECT * FROM content WHERE id=? AND kind IN ('sop','guide','notes') AND published=1 AND course_id=? AND (batch_id=? OR batch_id IS NULL)",
       d.content_id,
       b.course_id,
       b.id
     );
-    if (!c) fail(400, "Choose an approved SOP for this batch.");
+    if (!c) fail(400, "Choose an approved SOP, guide, or notes resource for this batch.");
     const id2 = await queueJob(db, "extract_sop", b.id, c.id, {
       content_id: c.id
     });
@@ -86629,6 +86652,7 @@ async function serviceAutomation(req, env) {
       const name = text(v.name, "Filename", 300), path = text(v.source_path, "Source path", 1e3), mime = text(v.mime, "MIME type", 150), revision = text(v.revision, "Revision", 200), kind = classifyMaterial(name, path, mime, sourceCfg), url3 = driveUrl(v.url, v.drive_file_id), order = lesson(name, path), classDate = extractClassDate(v), size = Number(v.size || 0);
       if (!Number.isSafeInteger(size) || size < 0)
         fail2(400, "Invalid file size.");
+      const warning = kind === "private" ? "Instructor-only, excluded folder/type, draft, or result data. Override category only if confirmed safe for students." : kind === "test_link" ? "A published student Google Form link is required. Prompts and answer keys must remain private." : "Drive links retain their existing sharing permissions. A copied attachment can be opened within the portal after approval.";
       const old = await one2(
         db,
         "SELECT id,status,file_id,class_date FROM import_items WHERE source_id=? AND generation=? AND drive_file_id=? AND revision=?",
@@ -86638,11 +86662,26 @@ async function serviceAutomation(req, env) {
         revision
       );
       if (old) {
+        if (old.status === "restricted" && kind !== "private") {
+          await run2(
+            db,
+            "UPDATE import_items SET kind=?, status='pending', warning=? WHERE id=?",
+            kind,
+            warning,
+            old.id
+          );
+          output.push({
+            ...old,
+            status: "pending",
+            kind,
+            reclassified: true
+          });
+          continue;
+        }
         output.push({ ...old, duplicate: true });
         continue;
       }
       const id2 = uuid();
-      const warning = kind === "private" ? "Instructor-only, excluded folder/type, draft, or result data. Override category only if confirmed safe for students." : kind === "test_link" ? "A published student Google Form link is required. Prompts and answer keys must remain private." : "Drive links retain their existing sharing permissions. A copied attachment can be opened within the portal after approval.";
       await run2(
         db,
         "INSERT OR IGNORE INTO import_items (id,source_id,generation,drive_file_id,revision,title,kind,topic,topic_order,source_path,source_url,mime,size,status,warning,class_date,created) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -87728,26 +87767,6 @@ async function adminApi(req, db, u, p) {
       );
       if (exists && !v.id)
         fail3(400, "This student is already invited to the batch.");
-      const existingUser = await one3(
-        db,
-        "SELECT id,role FROM users WHERE email=?",
-        email
-      );
-      if (existingUser) {
-        await run3(
-          db,
-          "INSERT OR IGNORE INTO enrollments (id,user_id,batch_id,fee,created) VALUES (?,?,?,?,?)",
-          id(),
-          existingUser.id,
-          v.batch_id,
-          fields.fee,
-          now3()
-        );
-        if (targetRole === "admin")
-          await run3(db, "UPDATE users SET role='admin' WHERE id=?", existingUser.id);
-        else if (targetRole === "trainer" && existingUser.role !== "admin")
-          await run3(db, "UPDATE users SET role='trainer' WHERE id=?", existingUser.id);
-      }
     } else if (kind === "content") {
       const kinds = [
         "live",
@@ -87827,6 +87846,53 @@ async function adminApi(req, db, u, p) {
       key,
       ...vals
     );
+    if (kind === "invitations") {
+      const existingUser = await one3(
+        db,
+        "SELECT id,role FROM users WHERE email=?",
+        fields.email
+      );
+      if (existingUser) {
+        const existingEnrollment = await one3(
+          db,
+          "SELECT id FROM enrollments WHERE user_id=? AND batch_id=?",
+          existingUser.id,
+          fields.batch_id
+        );
+        if (existingEnrollment) {
+          if (v.id) {
+            await run3(
+              db,
+              "UPDATE enrollments SET fee=? WHERE id=?",
+              fields.fee,
+              existingEnrollment.id
+            );
+          }
+        } else {
+          await run3(
+            db,
+            "INSERT OR IGNORE INTO enrollments (id,user_id,batch_id,fee,created) VALUES (?,?,?,?,?)",
+            id(),
+            existingUser.id,
+            fields.batch_id,
+            fields.fee,
+            now3()
+          );
+        }
+        if (fields.role === "admin")
+          await run3(
+            db,
+            "UPDATE users SET role='admin' WHERE id=?",
+            existingUser.id
+          );
+        else if (fields.role === "trainer" && existingUser.role !== "admin")
+          await run3(
+            db,
+            "UPDATE users SET role='trainer' WHERE id=?",
+            existingUser.id
+          );
+      }
+    }
     if (kind === "batches" && typeof v.drive_folder === "string" && v.drive_folder.trim())
       await saveSource(
         db,

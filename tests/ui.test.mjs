@@ -88,7 +88,12 @@ test("student and administrator DOM workflows render and assessment interaction 
         `Expected 6-workspace sidebar to include ${wsLabel}`,
       );
     }
-    await settle(() => button("Automation").click());
+    assert.equal(
+      document.querySelector(".admin-tabs"),
+      null,
+      "Overview workspace should not render a redundant sub-tab bar",
+    );
+    await settle(() => button("Classroom & Content").click());
     assert.match(document.body.textContent, /Let the materials come to you/);
     await settle(() => button("Connect a batch folder").click());
     assert.ok(
@@ -97,7 +102,7 @@ test("student and administrator DOM workflows render and assessment interaction 
     await settle(() =>
       document.querySelector('[aria-label="Close dialog"]').click(),
     );
-    await settle(() => button("Batches").click());
+    await settle(() => button("Curriculum & Batches").click());
     assert.match(document.body.textContent, /Manage your batches/);
     await settle(() => button("Create batch").click());
     assert.ok(document.querySelector('input[type="date"]'));

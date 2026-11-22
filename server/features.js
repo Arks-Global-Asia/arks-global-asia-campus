@@ -186,8 +186,9 @@ export async function wakeEngine(env, source_id = null) {
   const u = new URL(env.AZURE_ENGINE_URL);
   if (u.protocol !== "https:" || !u.hostname.endsWith(".azurewebsites.net"))
     fail(503, "Invalid Azure engine configuration.");
+  let r;
   try {
-    const r = await fetch(u, {
+    r = await fetch(u, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -197,18 +198,28 @@ export async function wakeEngine(env, source_id = null) {
       redirect: "error",
       signal: AbortSignal.timeout(20000),
     });
-    if (!r.ok)
-      fail(
-        503,
-        "Azure did not accept the request. Try again or check the engine.",
-      );
-    return true;
   } catch {
     fail(
       503,
       "Azure engine could not be reached. The saved job can be retried.",
     );
   }
+  if (!r.ok) {
+    let snippet = "";
+    try {
+      const raw = await r.text();
+      snippet = raw
+        .replace(/[\r\n\t]+/g, " ")
+        .replace(/(?:authorization|x-functions-key|x-arks-importer-token|cookie|set-cookie)\s*:\s*\S+/gi, "[redacted]")
+        .trim()
+        .slice(0, 200);
+    } catch {}
+    fail(
+      503,
+      `Azure rejected dispatch (HTTP ${r.status})${snippet ? `: ${snippet}` : ". Try again or check the engine."}`,
+    );
+  }
+  return true;
 }
 
 export async function queueJob(db, kind, batch, entity, payload) {
@@ -520,6 +531,10 @@ export async function featureRoutes(req, env, u) {
         db,
         "SELECT id,kind,batch_id,entity_id,status,error,created,finished FROM engine_jobs ORDER BY created DESC LIMIT 100",
       ),
+      drive_sops: await rows(
+        db,
+        "SELECT i.id,i.title,i.kind,i.status,i.file_id,i.source_url,s.batch_id FROM import_items i JOIN automation_sources s ON s.id=i.source_id WHERE i.status IN ('pending','published') AND (i.kind='sop' OR lower(i.title) LIKE '%sop%' OR lower(i.title) LIKE '%syllabus%' OR lower(i.title) LIKE '%roadmap%' OR lower(i.title) LIKE '%curriculum%') ORDER BY i.created DESC LIMIT 50",
+      ),
       engine_ready: !!(env.AZURE_ENGINE_URL && env.AZURE_ENGINE_KEY),
       google_ready: !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET),
       auth_mode: env.AUTH_MODE || "google",
@@ -531,12 +546,23 @@ export async function featureRoutes(req, env, u) {
     staff(u);
     const d = await req.json();
     await member(db, u, d.batch_id);
-    await run(
-      db,
-      "UPDATE batches SET config=? WHERE id=?",
-      JSON.stringify(safeConfig(d)),
-      d.batch_id,
-    );
+    if (d.covered !== undefined) {
+      const cov = Math.max(0, Math.min(100, Math.floor(Number(d.covered) || 0)));
+      await run(
+        db,
+        "UPDATE batches SET config=?, covered=? WHERE id=?",
+        JSON.stringify(safeConfig(d)),
+        cov,
+        d.batch_id,
+      );
+    } else {
+      await run(
+        db,
+        "UPDATE batches SET config=? WHERE id=?",
+        JSON.stringify(safeConfig(d)),
+        d.batch_id,
+      );
+    }
     return json({ ok: true });
   }
   if (p === "/api/admin/access" && req.method === "POST") {
@@ -784,12 +810,12 @@ export async function featureRoutes(req, env, u) {
       b = await member(db, u, d.batch_id);
     const c = await one(
       db,
-      "SELECT * FROM content WHERE id=? AND kind='sop' AND published=1 AND course_id=? AND (batch_id=? OR batch_id IS NULL)",
+      "SELECT * FROM content WHERE id=? AND kind IN ('sop','guide','notes') AND published=1 AND course_id=? AND (batch_id=? OR batch_id IS NULL)",
       d.content_id,
       b.course_id,
       b.id,
     );
-    if (!c) fail(400, "Choose an approved SOP for this batch.");
+    if (!c) fail(400, "Choose an approved SOP, guide, or notes resource for this batch.");
     const id = await queueJob(db, "extract_sop", b.id, c.id, {
       content_id: c.id,
     });

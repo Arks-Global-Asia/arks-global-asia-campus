@@ -6,7 +6,7 @@ import azure.functions as func
 from azure.core.exceptions import ResourceNotFoundError
 from azure.storage.blob import BlobServiceClient
 from auth import drive_session
-from scanner import Portal, Drive, scan_source
+from scanner import ApiError, Drive, Portal, ScanError, scan_source
 
 app = func.FunctionApp()
 
@@ -91,7 +91,21 @@ def engine_dispatch(req: func.HttpRequest):
             queue.send_message(json.dumps({'source_id': source['id']}))
         queue_engine_jobs()
         return func.HttpResponse('Accepted.', status_code=202)
+    except ApiError as e:
+        if e.status == 401:
+            msg = 'Portal authentication failed (401): verify ARKS_IMPORTER_TOKEN matches IMPORTER_TOKEN_SHA256.'
+        elif e.status == 404:
+            msg = 'Portal endpoint not found (404): verify PORTAL_ORIGIN.'
+        else:
+            msg = f'Portal returned HTTP {e.status} during dispatch; verify portal configuration.'
+        logging.warning('engine_dispatch ApiError: %s', msg)
+        return func.HttpResponse(msg, status_code=503)
+    except ScanError as e:
+        msg = str(e)
+        logging.warning('engine_dispatch ScanError: %s', msg)
+        return func.HttpResponse(msg, status_code=503)
     except Exception:
+        logging.warning('engine_dispatch failed with unexpected error.')
         return func.HttpResponse('Dispatch failed; check engine configuration.', status_code=503)
 
 

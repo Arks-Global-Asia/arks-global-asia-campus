@@ -61,8 +61,13 @@ class FakePortal:
 
 
 class FakeDrive:
-    def __init__(self, pages): self.pages, self.tokens, self.downloads = pages, [], []
+    def __init__(self, pages): self.pages, self.tokens, self.downloads, self.exports = pages, [], [], []
     def resolve(self, source): return {'id': ROOT, 'name': 'Batch', 'mimeType': FOLDER}
+    def export_google_file(self, file):
+        self.exports.append(file['id'])
+        ext = '.docx' if file['mimeType'] == 'application/vnd.google-apps.document' else '.pdf'
+        mime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' if ext == '.docx' else 'application/pdf'
+        return {**file, 'name': file['name'] + ext, 'mimeType': mime}, b'exported-bytes'
     def verify_ancestry(self, ancestors): pass
     def page(self, query, token=None):
         self.tokens.append(token)
@@ -119,10 +124,16 @@ class ScannerTests(unittest.TestCase):
 
     def test_native_and_large_files_remain_links(self):
         p, c = FakePortal(), Memory()
-        d = FakeDrive({None: {'files': [file(mimeType='application/vnd.google-apps.document'),
-                                       file('large_123456789', size=str(30*1024*1024))]}})
+        d = FakeDrive({None: {'files': [
+            file('gdoc_123456789', name='Bootcamp SOP', mimeType='application/vnd.google-apps.document'),
+            file('gslides_123456789', name='Day1 Deck', mimeType='application/vnd.google-apps.presentation'),
+            file('gform_123456789', name='Quiz Form', mimeType='application/vnd.google-apps.form'),
+            file('large_123456789', size=str(30*1024*1024)),
+        ]}})
         scan_source(p, d, c, 'source')
         self.assertEqual(d.downloads, [])
+        self.assertEqual(d.exports, ['gdoc_123456789', 'gslides_123456789'])
+        self.assertEqual(p.uploads, ['gdoc_123456789', 'gslides_123456789'])
 
     def test_skip_student_submission_folder_and_shortcuts(self):
         p, c = FakePortal(), Memory()

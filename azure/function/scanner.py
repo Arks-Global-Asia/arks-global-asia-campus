@@ -19,6 +19,20 @@ EXTENSIONS = re.compile(
     re.I,
 )
 DEFAULT_SKIP_FOLDERS = {"student_submissions", "lab_answers", "do_not_share", "trainer_only"}
+GOOGLE_EXPORTS = {
+    "application/vnd.google-apps.document": (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ".docx",
+    ),
+    "application/vnd.google-apps.presentation": (
+        "application/pdf",
+        ".pdf",
+    ),
+    "application/vnd.google-apps.spreadsheet": (
+        "text/csv",
+        ".csv",
+    ),
+}
 
 
 class ScanError(Exception):
@@ -210,6 +224,32 @@ class Drive:
             raise ScanError("Downloaded file checksum did not match Drive metadata.")
         return payload
 
+    def export_google_file(self, file):
+        mime = file.get("mimeType", "")
+        if mime not in GOOGLE_EXPORTS:
+            raise ScanError("Unsupported Google Workspace file type for export.")
+        export_mime, ext = GOOGLE_EXPORTS[mime]
+        data = io.BytesIO()
+        with request(
+            self.session,
+            "GET",
+            DRIVE + "/" + file["id"] + "/export",
+            retry=True,
+            params={"mimeType": export_mime},
+            stream=True,
+        ) as r:
+            for chunk in r.iter_content(65536):
+                data.write(chunk)
+                if data.tell() > MAX_BYTES:
+                    raise ScanError("Exported Google file exceeded the attachment limit.")
+        latest = self.get(file["id"])
+        if latest.get("trashed") or revision(latest) != revision(file) or latest.get("parents") != file.get("parents"):
+            raise ScanError("File changed during export; its page will be retried.")
+        name = file["name"]
+        if not name.lower().endswith(ext):
+            name = name + ext
+        return {**file, "name": name, "mimeType": export_mime}, data.getvalue()
+
     def verify_ancestry(self, ancestors):
         for child, parent in zip(ancestors, ancestors[1:]):
             folder = self.get(child)
@@ -297,7 +337,17 @@ def scan_source(portal, drive, checkpoints, source_id, *, max_pages=200, seconds
                 for file, item in zip(files, result):
                     if item["status"] != "pending" or item.get("file_id"):
                         continue
-                    if (
+                    if file["mimeType"] in (
+                        "application/vnd.google-apps.document",
+                        "application/vnd.google-apps.presentation",
+                    ):
+                        exported_file, payload = drive.export_google_file(file)
+                        if payload:
+                            portal.upload(run_id, item["id"], exported_file, payload)
+                            copied += 1
+                        else:
+                            linked += 1
+                    elif (
                         EXTENSIONS.search(file["name"])
                         and 0 < int(file.get("size", 0)) <= MAX_BYTES
                         and not file["mimeType"].startswith(("application/vnd.google-apps.", "video/", "audio/"))

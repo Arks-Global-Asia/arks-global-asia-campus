@@ -107,7 +107,7 @@ const ADMIN_WORKSPACES = [
     id: "classroom",
     label: "Classroom & Content",
     defaultTab: "automation",
-    tabs: ["automation", "schedule", "content"],
+    tabs: ["automation", "content", "schedule"],
   },
   {
     id: "assessments",
@@ -1452,6 +1452,7 @@ function App() {
 
   function Admin() {
     const [reportTestId, setReportTestId] = useState("all");
+    const [userBatchFilter, setUserBatchFilter] = useState("all");
     if (!adminData)
       return (
         <div className="loading">
@@ -1462,35 +1463,26 @@ function App() {
     const isHeadAdmin = boot.user.role === "admin";
     const allTabs = [
       ["overview", "Overview"],
-      ["automation", "Automation"],
       ["batches", "Batches"],
       ["settings", "Batch experience"],
-      ["schedule", "Session planner"],
-      ["content", "Content & sessions"],
-      ["engine", "Assessment studio"],
+      ...(isHeadAdmin ? [["courses", "Courses"]] : []),
+      ["automation", "Drive Sync & Inbox"],
+      ["content", "Published Library"],
+      ["schedule", "Live Sessions & Recordings"],
+      ["engine", "AI Studio & 9 AM Schedule"],
       ["tests", "Assessments"],
-      ["reports", "Results & grading"],
-      ["submissions", "Lab reviews"],
-      ["users", "People"],
-      ["invitations", "Onboarding"],
-      ["access", "Access & admins"],
-      ...(isHeadAdmin ? [["payments", "Fees"], ["courses", "Courses"]] : []),
-      ["tickets", "Queries"],
-      ["audit", "Activity"],
+      ["reports", "Results & Grading"],
+      ["submissions", "Lab Reviews"],
+      ["users", "Students & People"],
+      ["invitations", "Batch Enrollments"],
+      ["access", "Groups & Staff Access"],
+      ...(isHeadAdmin ? [["payments", "Fees & Payments"]] : []),
+      ["tickets", "Student Queries"],
+      ["audit", "Activity Log"],
     ];
-    const workspaceTabs = allTabs.filter(([id]) =>
-      activeWorkspace.tabs.includes(id),
-    );
-    const quickTabs = [
-      ...workspaceTabs,
-      ...allTabs.filter(
-        ([id]) =>
-          !activeWorkspace.tabs.includes(id) &&
-          ["overview", "automation", "batches", "engine", "reports"].includes(
-            id,
-          ),
-      ),
-    ];
+    const workspaceTabs = activeWorkspace.tabs
+      .map((id) => allTabs.find(([tid]) => tid === id))
+      .filter(Boolean);
 
     const labels = {
       batches: "Manage your batches",
@@ -1590,23 +1582,26 @@ function App() {
       );
     }
 
-    const AdminSubNav = () => (
-      <div className="admin-tabs">
-        {quickTabs.map(([id, label]) => (
-          <button
-            key={id}
-            className={adminTab === id ? "active" : ""}
-            onClick={() => setAdminTab(id)}
-          >
-            {label}
-            {id === "submissions" &&
-              a.submissions.some((s) => s.status === "submitted") && (
-                <span className="small-dot" />
-              )}
-          </button>
-        ))}
-      </div>
-    );
+    const AdminSubNav = () => {
+      if (workspaceTabs.length <= 1) return null;
+      return (
+        <div className="admin-tabs">
+          {workspaceTabs.map(([id, label]) => (
+            <button
+              key={id}
+              className={adminTab === id ? "active" : ""}
+              onClick={() => setAdminTab(id)}
+            >
+              {label}
+              {id === "submissions" &&
+                a.submissions.some((s) => s.status === "submitted") && (
+                  <span className="small-dot" />
+                )}
+            </button>
+          ))}
+        </div>
+      );
+    };
 
     if (["settings", "schedule", "engine", "access"].includes(adminTab))
       return (
@@ -1676,6 +1671,24 @@ function App() {
                         ? "Create batch"
                         : "Create course"}
               </Button>
+            ) : adminTab === "users" ? (
+              <div className="row gap wrap">
+                <Button
+                  onClick={() =>
+                    edit(
+                      "invitations",
+                      userBatchFilter !== "all"
+                        ? { batch_id: userBatchFilter }
+                        : null,
+                    )
+                  }
+                >
+                  <Plus size={16} /> Add Student to Batch
+                </Button>
+                <Button secondary onClick={() => setAdminTab("access")}>
+                  Bulk Add Students (CSV)
+                </Button>
+              </div>
             ) : adminTab === "payments" && isHeadAdmin ? (
               <Button onClick={() => setModal({ type: "payment" })}>
                 <Plus size={16} /> Record payment
@@ -1975,112 +1988,169 @@ function App() {
           })()
         ) : (
           <section className="panel table-panel">
-            {(a[adminTab] || []).length ? (
-              <div className="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      {(adminTab === "batches"
-                        ? [
-                            "Batch",
-                            "Course",
-                            "Dates",
-                            "Topics covered",
-                            "Status",
-                            "",
-                          ]
-                        : adminTab === "courses"
-                          ? ["Course", "Fee", "Currency", ""]
-                          : adminTab === "invitations"
-                            ? ["Email", "Batch", "Role", "Agreed fee", ""]
-                            : adminTab === "content"
-                              ? [
-                                  "Resource",
-                                  "Type",
-                                  "Topic",
-                                  "Scope",
-                                  "Status",
-                                  "",
-                                ]
-                              : adminTab === "tests"
+            {adminTab === "users" && (
+              <div
+                className="row between wrap gap"
+                style={{ padding: "12px 16px 8px" }}
+              >
+                <label className="row gap">
+                  <span>Filter by Batch</span>
+                  <select
+                    value={userBatchFilter}
+                    onChange={(e) => setUserBatchFilter(e.target.value)}
+                  >
+                    <option value="all">All Batches</option>
+                    {a.batches.map((b) => (
+                      <option key={b.id} value={b.id}>
+                        {b.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <small className="muted">
+                  Tip: Click <b>+ Assign Batch</b> on any student or{" "}
+                  <b>+ Add Student to Batch</b> above.
+                </small>
+              </div>
+            )}
+            {(() => {
+              const tableRows =
+                adminTab === "users" && userBatchFilter !== "all"
+                  ? (a.users || []).filter(
+                      (u) =>
+                        a.enrollments.some(
+                          (e) =>
+                            e.user_id === u.id &&
+                            e.batch_id === userBatchFilter,
+                        ) ||
+                        a.invitations.some(
+                          (inv) =>
+                            inv.email.toLowerCase() === u.email.toLowerCase() &&
+                            inv.batch_id === userBatchFilter,
+                        ),
+                    )
+                  : a[adminTab] || [];
+              return tableRows.length ? (
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        {(adminTab === "batches"
+                          ? [
+                              "Batch",
+                              "Course",
+                              "Dates",
+                              "Topics covered",
+                              "Status",
+                              "",
+                            ]
+                          : adminTab === "courses"
+                            ? ["Course", "Fee", "Currency", ""]
+                            : adminTab === "invitations"
+                              ? ["Email", "Batch", "Role", "Agreed fee", ""]
+                              : adminTab === "content"
                                 ? [
-                                    "Assessment",
+                                    "Resource",
                                     "Type",
-                                    "Unlocks after topic",
-                                    "Duration",
+                                    "Topic",
+                                    "Scope",
                                     "Status",
                                     "",
                                   ]
-                                : adminTab === "users"
-                                  ? ["Name", "Email", "Role", "Joined", ""]
-                                  : adminTab === "submissions"
-                                    ? ["Student", "Lab", "Batch", "Status", ""]
-                                    : adminTab === "tickets"
-                                      ? [
-                                          "Student",
-                                          "Subject",
-                                          "Category",
-                                          "Status",
-                                          "Created",
-                                          "",
-                                        ]
-                                      : adminTab === "payments"
+                                : adminTab === "tests"
+                                  ? [
+                                      "Assessment",
+                                      "Type",
+                                      "Unlocks after topic",
+                                      "Duration",
+                                      "Status",
+                                      "",
+                                    ]
+                                  : adminTab === "users"
+                                    ? [
+                                        "Name",
+                                        "Email",
+                                        "Enrolled Batches",
+                                        "Role",
+                                        "Joined",
+                                        "",
+                                      ]
+                                    : adminTab === "submissions"
+                                      ? ["Student", "Lab", "Batch", "Status", ""]
+                                      : adminTab === "tickets"
                                         ? [
                                             "Student",
-                                            "Batch",
-                                            "Amount",
-                                            "Reference",
-                                            "Date",
+                                            "Subject",
+                                            "Category",
+                                            "Status",
+                                            "Created",
                                             "",
                                           ]
-                                        : ["Actor", "Action", "Record", "Date"]
-                      ).map((h, i) => (
-                        <th key={i}>{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {a[adminTab].map((v) => (
-                      <tr key={v.id}>
-                        {adminTab === "batches" ? (
-                          <>
-                            <td>
-                              <b>{v.name}</b>
-                            </td>
-                            <td>
-                              {
-                                a.courses.find((c) => c.id === v.course_id)
-                                  ?.title
-                              }
-                            </td>
-                            <td>
-                              {date(v.start_date)}
-                              <br />
-                              <small>to {date(v.end_date)}</small>
-                            </td>
-                            <td>{v.covered}</td>
-                            <td>
-                              <Badge tone="green">{v.status}</Badge>
-                            </td>
-                            <td>
-                              <div className="row gap">
-                                <button
-                                  className="text-btn"
-                                  onClick={() => edit("batches", v)}
-                                >
-                                  Edit
-                                </button>
-                                <button
-                                  className="text-btn"
-                                  onClick={() =>
-                                    removeEntity("batches", v.id, v.name)
-                                  }
-                                >
-                                  Delete
-                                </button>
-                              </div>
-                            </td>
-                          </>
+                                        : adminTab === "payments"
+                                          ? [
+                                              "Student",
+                                              "Batch",
+                                              "Amount",
+                                              "Reference",
+                                              "Date",
+                                              "",
+                                            ]
+                                          : ["Actor", "Action", "Record", "Date"]
+                        ).map((h, i) => (
+                          <th key={i}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {tableRows.map((v) => (
+                        <tr key={v.id}>
+                          {adminTab === "batches" ? (
+                            <>
+                              <td>
+                                <b>{v.name}</b>
+                              </td>
+                              <td>
+                                {
+                                  a.courses.find((c) => c.id === v.course_id)
+                                    ?.title
+                                }
+                              </td>
+                              <td>
+                                {date(v.start_date)}
+                                <br />
+                                <small>to {date(v.end_date)}</small>
+                              </td>
+                              <td>{v.covered}</td>
+                              <td>
+                                <Badge tone="green">{v.status}</Badge>
+                              </td>
+                              <td>
+                                <div className="row gap wrap">
+                                  <button
+                                    className="text-btn"
+                                    onClick={() =>
+                                      edit("invitations", { batch_id: v.id })
+                                    }
+                                  >
+                                    + Add Student
+                                  </button>
+                                  <button
+                                    className="text-btn"
+                                    onClick={() => edit("batches", v)}
+                                  >
+                                    Edit
+                                  </button>
+                                  <button
+                                    className="text-btn"
+                                    onClick={() =>
+                                      removeEntity("batches", v.id, v.name)
+                                    }
+                                  >
+                                    Delete
+                                  </button>
+                                </div>
+                              </td>
+                            </>
                         ) : adminTab === "courses" ? (
                           <>
                             <td>
@@ -2215,55 +2285,85 @@ function App() {
                             </td>
                           </>
                         ) : adminTab === "users" ? (
-                          <>
-                            <td>
-                              <button
-                                className="text-btn"
-                                onClick={() =>
-                                  setModal({ type: "student360", item: v })
-                                }
-                              >
-                                <b>{v.name}</b> ↗
-                              </button>
-                            </td>
-                            <td>{v.email}</td>
-                            <td>
-                              <Badge
-                                tone={
-                                  v.role === "admin"
-                                    ? "blue"
-                                    : v.role === "trainer"
-                                      ? "purple"
-                                      : ""
-                                }
-                              >
-                                {v.role}
-                              </Badge>
-                            </td>
-                            <td>{date(v.created)}</td>
-                            <td>
-                              <div className="row gap">
-                                <button
-                                  className="text-btn"
-                                  onClick={() =>
-                                    setModal({ type: "student360", item: v })
-                                  }
-                                >
-                                  360° profile
-                                </button>
-                                {isHeadAdmin && v.id !== boot.user.id && (
+                          (() => {
+                            const userBatches = a.enrollments
+                              .filter((e) => e.user_id === v.id)
+                              .map((e) => batchName(e.batch_id));
+                            return (
+                              <>
+                                <td>
                                   <button
                                     className="text-btn"
                                     onClick={() =>
-                                      setModal({ type: "role", item: v })
+                                      setModal({ type: "student360", item: v })
                                     }
                                   >
-                                    Change role
+                                    <b>{v.name}</b> ↗
                                   </button>
-                                )}
-                              </div>
-                            </td>
-                          </>
+                                </td>
+                                <td>{v.email}</td>
+                                <td>
+                                  <div className="row gap wrap">
+                                    {userBatches.length ? (
+                                      userBatches.map((bn, idx) => (
+                                        <Badge key={idx} tone="green">
+                                          {bn}
+                                        </Badge>
+                                      ))
+                                    ) : (
+                                      <small className="muted">
+                                        Not enrolled
+                                      </small>
+                                    )}
+                                  </div>
+                                </td>
+                                <td>
+                                  <Badge
+                                    tone={
+                                      v.role === "admin"
+                                        ? "blue"
+                                        : v.role === "trainer"
+                                          ? "purple"
+                                          : ""
+                                    }
+                                  >
+                                    {v.role}
+                                  </Badge>
+                                </td>
+                                <td>{date(v.created)}</td>
+                                <td>
+                                  <div className="row gap wrap">
+                                    <button
+                                      className="text-btn"
+                                      onClick={() =>
+                                        edit("invitations", { email: v.email })
+                                      }
+                                    >
+                                      + Assign Batch
+                                    </button>
+                                    <button
+                                      className="text-btn"
+                                      onClick={() =>
+                                        setModal({ type: "student360", item: v })
+                                      }
+                                    >
+                                      360° profile
+                                    </button>
+                                    {isHeadAdmin && v.id !== boot.user.id && (
+                                      <button
+                                        className="text-btn"
+                                        onClick={() =>
+                                          setModal({ type: "role", item: v })
+                                        }
+                                      >
+                                        Change role
+                                      </button>
+                                    )}
+                                  </div>
+                                </td>
+                              </>
+                            );
+                          })()
                         ) : adminTab === "submissions" ? (
                           <>
                             <td>{name(v.user_id)}</td>
@@ -2397,7 +2497,8 @@ function App() {
                       : "New records will appear here as your campus grows."
                 }
               />
-            )}
+            );
+            })()}
           </section>
         )}
       </>
@@ -2688,7 +2789,7 @@ function App() {
               : modal?.type === "resource"
                 ? modal.item.title
                 : modal?.type === "editor"
-                  ? (modal.item ? "Edit " : "Create ") +
+                  ? (modal.item?.id ? "Edit " : "Create ") +
                     {
                       invitations: "enrollment",
                       content: "resource",

@@ -858,6 +858,12 @@ export async function serviceAutomation(req, env) {
         size = Number(v.size || 0);
       if (!Number.isSafeInteger(size) || size < 0)
         fail(400, "Invalid file size.");
+      const warning =
+        kind === "private"
+          ? "Instructor-only, excluded folder/type, draft, or result data. Override category only if confirmed safe for students."
+          : kind === "test_link"
+            ? "A published student Google Form link is required. Prompts and answer keys must remain private."
+            : "Drive links retain their existing sharing permissions. A copied attachment can be opened within the portal after approval.";
       const old = await one(
         db,
         "SELECT id,status,file_id,class_date FROM import_items WHERE source_id=? AND generation=? AND drive_file_id=? AND revision=?",
@@ -867,16 +873,26 @@ export async function serviceAutomation(req, env) {
         revision,
       );
       if (old) {
+        if (old.status === "restricted" && kind !== "private") {
+          await run(
+            db,
+            "UPDATE import_items SET kind=?, status='pending', warning=? WHERE id=?",
+            kind,
+            warning,
+            old.id,
+          );
+          output.push({
+            ...old,
+            status: "pending",
+            kind,
+            reclassified: true,
+          });
+          continue;
+        }
         output.push({ ...old, duplicate: true });
         continue;
       }
       const id = uuid();
-      const warning =
-        kind === "private"
-          ? "Instructor-only, excluded folder/type, draft, or result data. Override category only if confirmed safe for students."
-          : kind === "test_link"
-            ? "A published student Google Form link is required. Prompts and answer keys must remain private."
-            : "Drive links retain their existing sharing permissions. A copied attachment can be opened within the portal after approval.";
       await run(
         db,
         "INSERT OR IGNORE INTO import_items (id,source_id,generation,drive_file_id,revision,title,kind,topic,topic_order,source_path,source_url,mime,size,status,warning,class_date,created) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",

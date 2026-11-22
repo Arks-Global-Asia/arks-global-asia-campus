@@ -943,27 +943,6 @@ async function adminApi(req, db, u, p) {
       );
       if (exists && !v.id)
         fail(400, "This student is already invited to the batch.");
-      // Auto-enroll if user already exists
-      const existingUser = await one(
-        db,
-        "SELECT id,role FROM users WHERE email=?",
-        email,
-      );
-      if (existingUser) {
-        await run(
-          db,
-          "INSERT OR IGNORE INTO enrollments (id,user_id,batch_id,fee,created) VALUES (?,?,?,?,?)",
-          id(),
-          existingUser.id,
-          v.batch_id,
-          fields.fee,
-          now(),
-        );
-        if (targetRole === "admin")
-          await run(db, "UPDATE users SET role='admin' WHERE id=?", existingUser.id);
-        else if (targetRole === "trainer" && existingUser.role !== "admin")
-          await run(db, "UPDATE users SET role='trainer' WHERE id=?", existingUser.id);
-      }
     } else if (kind === "content") {
       const kinds = [
         "live",
@@ -1066,6 +1045,53 @@ async function adminApi(req, db, u, p) {
       key,
       ...vals,
     );
+    if (kind === "invitations") {
+      const existingUser = await one(
+        db,
+        "SELECT id,role FROM users WHERE email=?",
+        fields.email,
+      );
+      if (existingUser) {
+        const existingEnrollment = await one(
+          db,
+          "SELECT id FROM enrollments WHERE user_id=? AND batch_id=?",
+          existingUser.id,
+          fields.batch_id,
+        );
+        if (existingEnrollment) {
+          if (v.id) {
+            await run(
+              db,
+              "UPDATE enrollments SET fee=? WHERE id=?",
+              fields.fee,
+              existingEnrollment.id,
+            );
+          }
+        } else {
+          await run(
+            db,
+            "INSERT OR IGNORE INTO enrollments (id,user_id,batch_id,fee,created) VALUES (?,?,?,?,?)",
+            id(),
+            existingUser.id,
+            fields.batch_id,
+            fields.fee,
+            now(),
+          );
+        }
+        if (fields.role === "admin")
+          await run(
+            db,
+            "UPDATE users SET role='admin' WHERE id=?",
+            existingUser.id,
+          );
+        else if (fields.role === "trainer" && existingUser.role !== "admin")
+          await run(
+            db,
+            "UPDATE users SET role='trainer' WHERE id=?",
+            existingUser.id,
+          );
+      }
+    }
     if (
       kind === "batches" &&
       typeof v.drive_folder === "string" &&

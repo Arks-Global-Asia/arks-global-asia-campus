@@ -508,27 +508,125 @@ export function AdminTools({ tab, data, batchId, user, refresh, edit }) {
 }
 
 function BatchSettings({ batch, data, save, pending, features }) {
-  const cfg = JSON.parse(batch.config || "{}"),
-    [roadmap, setRoadmap] = useState(
-      JSON.stringify(cfg.roadmap || [], null, 2),
-    ),
-    [parseError, setParseError] = useState("");
+  const cfg = JSON.parse(batch.config || "{}");
+  const course = (data.courses || []).find((c) => c.id === batch.course_id);
+  const courseSyllabus = (() => {
+    try {
+      const parsed = JSON.parse(course?.syllabus || "[]");
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  })();
+  const [roadmapItems, setRoadmapItems] = useState(() =>
+    Array.isArray(cfg.roadmap) ? cfg.roadmap : [],
+  );
+  const [coveredCount, setCoveredCount] = useState(() =>
+    Number(batch.covered || 0),
+  );
+  const [uploadingSop, setUploadingSop] = useState(false);
+  const [sopMsg, setSopMsg] = useState("");
+
+  const approvedSops = (data.content || []).filter(
+    (c) =>
+      c.published &&
+      c.course_id === batch.course_id &&
+      (!c.batch_id || c.batch_id === batch.id) &&
+      (c.kind === "sop" ||
+        c.kind === "guide" ||
+        /sop|syllabus|roadmap|curriculum/i.test(c.title || "")),
+  );
+  const pendingDriveSops = (features.drive_sops || []).filter(
+    (s) => s.batch_id === batch.id && s.status === "pending",
+  );
+
+  function updateTopic(index, key, value) {
+    setRoadmapItems((prev) =>
+      prev.map((item, i) => (i === index ? { ...item, [key]: value } : item)),
+    );
+  }
+
+  async function approveAndExtractDriveSop(driveItem) {
+    setUploadingSop(true);
+    setSopMsg("");
+    try {
+      const reviewed = await request("admin/automation/review", {
+        id: driveItem.id,
+        action: "approve",
+        kind: "sop",
+        confirmed_student_safe: true,
+        note: "Approved from Batch Experience for SOP roadmap extraction.",
+      });
+      await save("admin/extract-sop", {
+        batch_id: batch.id,
+        content_id: reviewed.content_id,
+      });
+      setSopMsg(
+        `Approved "${driveItem.title}" and queued AI roadmap extraction.`,
+      );
+    } catch (e) {
+      setSopMsg(e.message || "Could not approve and extract Drive SOP.");
+    } finally {
+      setUploadingSop(false);
+    }
+  }
+
+  async function uploadDirectSop(file) {
+    if (!file) return;
+    setUploadingSop(true);
+    setSopMsg("");
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const upRes = await fetch("/api/upload", { method: "POST", body: fd });
+      const upData = await upRes.json();
+      if (!upRes.ok) throw new Error(upData.error || "File upload failed.");
+      const saved = await request("admin/save", {
+        entity: "content",
+        values: {
+          course_id: batch.course_id,
+          batch_id: batch.id,
+          kind: "sop",
+          title: file.name.replace(/\.[^.]+$/, ""),
+          topic: "Bootcamp SOP",
+          topic_order: 1,
+          body: "Uploaded directly in Batch Experience for SOP roadmap extraction.",
+          url: "",
+          file_id: upData.id,
+          published: 1,
+        },
+      });
+      await save("admin/extract-sop", {
+        batch_id: batch.id,
+        content_id: saved.id,
+      });
+      setSopMsg(
+        `Uploaded "${file.name}" and queued AI roadmap extraction.`,
+      );
+    } catch (e) {
+      setSopMsg(e.message || "SOP upload failed.");
+    } finally {
+      setUploadingSop(false);
+    }
+  }
+
   return (
     <>
       <form
         className="panel form"
         onSubmit={(e) => {
           e.preventDefault();
-          try {
-            const d = Object.fromEntries(new FormData(e.target));
-            d.roadmap = JSON.parse(roadmap);
-            d.require_google_group =
-              new FormData(e.target).get("require_google_group") === "on";
-            save("admin/batch-config", { ...d, batch_id: batch.id });
-            setParseError("");
-          } catch {
-            setParseError("Roadmap must be valid JSON.");
-          }
+          const fd = new FormData(e.target);
+          const d = Object.fromEntries(fd);
+          d.roadmap = roadmapItems
+            .map((r) => ({
+              title: String(r.title || "").trim(),
+              detail: String(r.detail || "").trim(),
+            }))
+            .filter((r) => r.title || r.detail);
+          d.covered = coveredCount;
+          d.require_google_group = fd.get("require_google_group") === "on";
+          save("admin/batch-config", { ...d, batch_id: batch.id });
         }}
       >
         <h3>Course guide and support</h3>
@@ -555,7 +653,7 @@ function BatchSettings({ batch, data, save, pending, features }) {
         <Field label="Full course overview">
           <textarea
             name="overview"
-            rows={7}
+            rows={5}
             defaultValue={cfg.overview || ""}
           />
         </Field>
@@ -568,95 +666,254 @@ function BatchSettings({ batch, data, save, pending, features }) {
           Students upload PDF/DOCX in the portal. The Azure engine transfers
           submissions to this private folder.
         </p>
-        <Field label="Roadmap (title and detail for each topic)">
-          <textarea
-            rows={8}
-            value={roadmap}
-            onChange={(e) => setRoadmap(e.target.value)}
-          />
-        </Field>
+
+        <div className="builder">
+          <div className="row between wrap gap">
+            <div>
+              <h3>Visual Batch Roadmap Builder</h3>
+              <p>
+                Organize topics in order and check off topics already covered in
+                class ({coveredCount} of {roadmapItems.length} covered).
+              </p>
+            </div>
+            <div className="row gap wrap">
+              {roadmapItems.length === 0 && courseSyllabus.length > 0 && (
+                <button
+                  type="button"
+                  className="button secondary"
+                  onClick={() => setRoadmapItems(courseSyllabus)}
+                >
+                  Load from Course Syllabus
+                </button>
+              )}
+              <button
+                type="button"
+                className="button secondary"
+                onClick={() =>
+                  setRoadmapItems((prev) => [
+                    ...prev,
+                    { title: "", detail: "" },
+                  ])
+                }
+              >
+                + Add Topic
+              </button>
+            </div>
+          </div>
+
+          {roadmapItems.length === 0 ? (
+            <p className="help-note">
+              No custom batch roadmap yet. Click <b>Load from Course Syllabus</b>,{" "}
+              <b>+ Add Topic</b>, or extract a roadmap from your SOP below.
+            </p>
+          ) : (
+            roadmapItems.map((item, i) => (
+              <div className="builder-item" key={i}>
+                <div className="row between wrap gap">
+                  <span className="badge blue">Topic {i + 1}</span>
+                  <div className="row gap">
+                    <label className="row gap">
+                      <input
+                        type="checkbox"
+                        checked={i < coveredCount}
+                        onChange={(e) =>
+                          setCoveredCount(
+                            e.target.checked
+                              ? Math.max(coveredCount, i + 1)
+                              : Math.min(coveredCount, i),
+                          )
+                        }
+                      />
+                      Covered in class
+                    </label>
+                    <button
+                      type="button"
+                      className="text-btn"
+                      onClick={() =>
+                        setRoadmapItems((prev) =>
+                          prev.filter((_, idx) => idx !== i),
+                        )
+                      }
+                    >
+                      Remove
+                    </button>
+                  </div>
+                </div>
+                <label>
+                  Topic title
+                  <input
+                    value={item.title || ""}
+                    placeholder="e.g., Linux Fundamentals & Shell Scripting"
+                    onChange={(e) => updateTopic(i, "title", e.target.value)}
+                  />
+                </label>
+                <label>
+                  Topic detail
+                  <textarea
+                    rows={2}
+                    value={item.detail || ""}
+                    placeholder="Key concepts, tools, and labs covered in this topic"
+                    onChange={(e) => updateTopic(i, "detail", e.target.value)}
+                  />
+                </label>
+              </div>
+            ))
+          )}
+        </div>
+
         <input
           type="hidden"
           name="sop_content_id"
           value={cfg.sop_content_id || ""}
         />
-        {parseError && <p className="form-error">{parseError}</p>}
         <button className="button" disabled={pending}>
           Save batch experience
         </button>
       </form>
-      <section className="panel">
-        <h3>Extract a roadmap from the approved SOP</h3>
-        {data.content
-          .filter(
-            (c) =>
-              c.kind === "sop" &&
-              c.published &&
-              c.course_id === batch.course_id &&
-              (!c.batch_id || c.batch_id === batch.id),
-          )
-          .map((c) => (
-            <div className="row between" key={c.id}>
-              <span>{c.title}</span>
-              <button
-                className="button secondary"
-                disabled={pending}
-                onClick={() =>
-                  save("admin/extract-sop", {
-                    batch_id: batch.id,
-                    content_id: c.id,
-                  })
-                }
-              >
-                Extract roadmap
-              </button>
-            </div>
-          ))}
+
+      <section className="panel form">
+        <h3>SOP &amp; Drive Roadmap Extraction</h3>
+        <p className="help-note">
+          Extract a structured batch roadmap automatically from an approved SOP,
+          a synced Google Drive SOP file, or by uploading an SOP document
+          directly.
+        </p>
+        {sopMsg && (
+          <p role="status" className="info-strip">
+            {sopMsg}
+          </p>
+        )}
+
+        <label>
+          Direct SOP Upload (PDF, DOCX, TXT, MD)
+          <input
+            type="file"
+            accept=".pdf,.docx,.doc,.txt,.md"
+            disabled={pending || uploadingSop}
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) uploadDirectSop(file);
+              e.target.value = "";
+            }}
+          />
+        </label>
+
+        {pendingDriveSops.length > 0 && (
+          <div>
+            <h4>Pending SOPs synced from Google Drive</h4>
+            {pendingDriveSops.map((s) => (
+              <div className="row between wrap gap" key={s.id}>
+                <span>
+                  <b>{s.title}</b>{" "}
+                  <small className="muted">
+                    ({s.file_id ? "Ready for AI extraction" : "Drive link"})
+                  </small>
+                </span>
+                <button
+                  type="button"
+                  className="button"
+                  disabled={pending || uploadingSop}
+                  onClick={() => approveAndExtractDriveSop(s)}
+                >
+                  Approve Drive SOP &amp; Extract Roadmap
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div>
+          <h4>Approved SOP / Guide Resources</h4>
+          {approvedSops.length ? (
+            approvedSops.map((c) => (
+              <div className="row between wrap gap" key={c.id}>
+                <span>
+                  <b>{c.title}</b>{" "}
+                  <small className="muted">({c.kind})</small>
+                </span>
+                <button
+                  type="button"
+                  className="button secondary"
+                  disabled={pending || uploadingSop}
+                  onClick={() =>
+                    save("admin/extract-sop", {
+                      batch_id: batch.id,
+                      content_id: c.id,
+                    })
+                  }
+                >
+                  Extract roadmap
+                </button>
+              </div>
+            ))
+          ) : (
+            <p className="help-note">
+              No approved SOP or guide found for this batch yet. Upload one
+              above or approve a synced Drive SOP.
+            </p>
+          )}
+        </div>
+
         {features.jobs
           .filter((j) => j.batch_id === batch.id && j.kind === "extract_sop")
           .map((j) => (
-            <SopJob key={j.id} job={j} save={save} />
+            <SopJob key={j.id} job={j} save={save} pending={pending} />
           ))}
       </section>
     </>
   );
 }
 
-function SopJob({ job, save }) {
+function SopJob({ job, save, pending }) {
   const [result, setResult] = useState(null);
+  const [loadError, setLoadError] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    if (job.status === "complete") {
+      request("admin/job-result?id=" + job.id)
+        .then((r) => {
+          if (active && r?.result) setResult(JSON.parse(r.result));
+        })
+        .catch((e) => {
+          if (active) setLoadError(e.message || "Could not load roadmap preview.");
+        });
+    }
+    return () => {
+      active = false;
+    };
+  }, [job.id, job.status]);
+
   return (
     <div className="panel">
-      <span>SOP extraction · {job.status}</span>
-      {job.error && <p>{job.error}</p>}
-      {job.status === "complete" && (
+      <div className="row between wrap gap">
+        <b>SOP extraction · {job.status}</b>
+        {job.finished && (
+          <small className="muted">
+            {new Date(job.finished).toLocaleString()}
+          </small>
+        )}
+      </div>
+      {job.error && <p className="form-error">{job.error}</p>}
+      {loadError && <p className="form-error">{loadError}</p>}
+      {job.status === "complete" && result?.roadmap?.length > 0 && (
         <>
+          <ol>
+            {result.roadmap.map((r, i) => (
+              <li key={i}>
+                <b>{r.title}</b>
+                <p>{r.detail}</p>
+              </li>
+            ))}
+          </ol>
           <button
-            className="text-btn"
-            onClick={async () => {
-              const r = await request("admin/job-result?id=" + job.id);
-              setResult(JSON.parse(r.result));
-            }}
+            type="button"
+            className="button"
+            disabled={pending}
+            onClick={() => save("admin/apply-roadmap", { job_id: job.id })}
           >
-            Review extracted roadmap
+            Apply Extracted Roadmap to Batch
           </button>
-          {result && (
-            <>
-              <ol>
-                {result.roadmap.map((r, i) => (
-                  <li key={i}>
-                    <b>{r.title}</b>
-                    <p>{r.detail}</p>
-                  </li>
-                ))}
-              </ol>
-              <button
-                className="button"
-                onClick={() => save("admin/apply-roadmap", { job_id: job.id })}
-              >
-                Approve roadmap for students
-              </button>
-            </>
-          )}
         </>
       )}
     </div>

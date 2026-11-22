@@ -24,15 +24,19 @@ await build({
 await fs.cp("drizzle", "dist/drizzle", { recursive: true });
 await fs.mkdir("api/gateway", { recursive: true });
 await build({
-  entryPoints: ["server/api.js"],
+  entryPoints: ["server/swa-gateway.js"],
   bundle: true,
-  format: "esm",
+  format: "cjs",
   platform: "node",
   target: "node20",
-  outfile: "api/gateway/api-bundle.js",
+  outfile: "api/gateway/index.js",
+  external: ["pg-native"],
+  footer: {
+    js: "if (module.exports && module.exports.default) { const fn = module.exports.default; Object.assign(fn, module.exports); module.exports = fn; }",
+  },
 });
 console.log(
   "Built Worker with " +
     Object.keys(assets).length +
-    " embedded assets and bundled api/gateway/api-bundle.js.",
+    " embedded assets and bundled CommonJS api/gateway/index.js.",
 );

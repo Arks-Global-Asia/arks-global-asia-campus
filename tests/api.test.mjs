@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createRequire } from "node:module";
 import { api, grade, publicQuestions } from "../server/api.js";
 import { database, memoryBucket } from "../scripts/database.mjs";
 const owner = { id: "owner", email: "owner@arks.test" },
@@ -816,7 +817,11 @@ test("Azure SWA Managed Function gateway translates SQLite to PostgreSQL, handle
     translateSqliteToPg,
     buildFetchRequest,
     PG_SCHEMA_MIGRATIONS,
-  } = await import("../api/gateway/index.js");
+  } = await import("../server/swa-gateway.js");
+
+  const require = createRequire(import.meta.url);
+  const cjsGateway = require("../api/gateway/index.js");
+  assert.equal(typeof cjsGateway, "function");
 
   // 1. Verify SQL translator handles INSERT OR IGNORE and ? placeholders outside single quotes
   assert.equal(
@@ -857,7 +862,7 @@ test("Azure SWA Managed Function gateway translates SQLite to PostgreSQL, handle
     "https://student-portal.arksglobalasia.cloud/api/campus?batch=sandbox",
   );
 
-  // 3. Verify full gateway invocation for /api/auth/config and /api/auth/admin with APP_ORIGIN and x-ms-original-url
+  // 3. Verify full gateway invocation for /api/auth/config and /api/auth/admin with APP_ORIGIN and x-ms-original-url (including CommonJS require("../api/gateway/index.js"))
   const { env, call } = await campus();
   await call(owner, "admin/password", {
     email: "swa-head@arks.test",
@@ -870,7 +875,7 @@ test("Azure SWA Managed Function gateway translates SQLite to PostgreSQL, handle
     bindingData: { segments: "auth/config" },
     log: { error: () => {} },
   };
-  await gateway(
+  await cjsGateway(
     configCtx,
     {
       method: "GET",
@@ -888,7 +893,7 @@ test("Azure SWA Managed Function gateway translates SQLite to PostgreSQL, handle
     },
   );
   assert.equal(configCtx.res.status, 200);
-  const cfgJson = JSON.parse(configCtx.res.body.toString("utf8"));
+  const cfgJson = JSON.parse(String(configCtx.res.body));
   assert.equal(cfgJson.google_ready, true);
   assert.equal(
     cfgJson.public_origin,
@@ -921,7 +926,7 @@ test("Azure SWA Managed Function gateway translates SQLite to PostgreSQL, handle
     },
   );
   assert.equal(loginCtx.res.status, 200);
-  const loginBody = JSON.parse(loginCtx.res.body.toString("utf8"));
+  const loginBody = JSON.parse(String(loginCtx.res.body));
   assert.equal(loginBody.ok, true);
   assert.equal(loginBody.role, "admin");
   assert.match(String(loginCtx.res.headers["Set-Cookie"] || ""), /arks_session=/);

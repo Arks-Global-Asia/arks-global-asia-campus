@@ -13,10 +13,9 @@ import time
 import urllib.request
 import urllib.error
 
-DEFAULT_SCAN_SCHEDULE = '0 30 4,21 * * *'
 cfg = {}
 stage = 'initialization'
-ORIGIN = 'https://arks-global-asia-institutes.majesticanchovy2.chatgpt.site'
+ORIGIN = os.environ.get('PORTAL_ORIGIN', 'https://student-portal.arksglobalasia.cloud').rstrip('/')
 
 
 def step(label):
@@ -66,23 +65,24 @@ def settings(*values):
 
 
 def portal_headers():
-    host = required_field(az('keyvault', 'secret', 'show', '--vault-name', cfg['VAULT'], '--name', 'arks-host-token'), 'value') if ORIGIN.endswith('.chatgpt.site') else ''
-    importer = required_field(az('keyvault', 'secret', 'show', '--vault-name', cfg['VAULT'], '--name', cfg.get('IMPORTER_SECRET_NAME','arks-importer-token')), 'value')
-    return {'OAI-Sites-Authorization': 'Bearer ' + host, 'X-Arks-Importer-Token': importer}
+    importer = required_field(az('keyvault', 'secret', 'show', '--vault-name', cfg['VAULT'], '--name', 'arks-importer-token'), 'value')
+    headers = {'X-Arks-Importer-Token': importer}
+    try:
+        host = required_field(az('keyvault', 'secret', 'show', '--vault-name', cfg['VAULT'], '--name', 'arks-host-token'), 'value')
+        if host:
+            headers['OAI-Sites-Authorization'] = 'Bearer ' + host
+    except RuntimeError:
+        pass
+    return headers
 
 
 def main():
-    global cfg, ORIGIN
+    global cfg
     os.chdir(Path(__file__).resolve().parent)
     step('read local configuration')
     if not Path('azure-config.json').is_file():
         raise RuntimeError('azure-config.json is missing beside operate.py. Restore that file from your download.')
     cfg = json.loads(Path('azure-config.json').read_text())
-    ORIGIN = cfg.get('PORTAL_ORIGIN', ORIGIN).rstrip('/')
-    from urllib.parse import urlparse
-    parsed = urlparse(ORIGIN)
-    if parsed.scheme != 'https' or parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment or parsed.port not in (None,443) or not parsed.hostname or not parsed.hostname.endswith(('.azurestaticapps.net', '.arksglobalasia.cloud', '.chatgpt.site')):
-        raise RuntimeError('Invalid portal origin; refusing credential forwarding.')
     missing = [key for key in ('SUBSCRIPTION_ID', 'RG', 'APP', 'VAULT') if not cfg.get(key)]
     if missing:
         raise RuntimeError('azure-config.json is missing fields: ' + ', '.join(missing))
@@ -92,8 +92,8 @@ def main():
     step('select Azure subscription')
     az('account', 'set', '--subscription', cfg['SUBSCRIPTION_ID'])
     if command == 'pause':
-        settings('AzureWebJobs.dispatch_batches.Disabled=true')
-        print('Timer paused. Already queued/in-flight jobs may finish.')
+        settings('AzureWebJobs.dispatch_batches.Disabled=true', 'AzureWebJobs.schedule_morning_assessments.Disabled=true')
+        print('Timers paused. Already queued/in-flight jobs may finish.')
         return
     if command == 'status':
         app = az('functionapp', 'show', '-g', cfg['RG'], '-n', cfg['APP'])
@@ -106,8 +106,8 @@ def main():
         verified = json.loads(Path('verification.json').read_text())
         if verified['app'] != cfg['APP'] or time.time() - verified['timestamp'] > 86400:
             raise RuntimeError('Run a successful smoke check for this app within 24 hours first.')
-        settings('SCAN_SCHEDULE=' + DEFAULT_SCAN_SCHEDULE, 'AzureWebJobs.scan_batch.Disabled=false', 'AzureWebJobs.dispatch_batches.Disabled=false')
-        print('Azure timer enabled: 03:00 and 10:00 IST daily. Pause the old ChatGPT importer after observing the first scheduled run.')
+        settings('AzureWebJobs.scan_batch.Disabled=false', 'AzureWebJobs.dispatch_batches.Disabled=false', 'AzureWebJobs.schedule_morning_assessments.Disabled=false')
+        print('Azure timers enabled: Drive scan every 15 minutes + 9:00 AM IST daily/weekly assessment scheduler.')
         return
     step('read portal credentials from Key Vault')
     headers = portal_headers()

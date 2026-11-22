@@ -1,12 +1,24 @@
-import { entraReady, entraRoutes } from "./entra.js";
 import { createRemoteJWKSet, jwtVerify } from "jose";
-import { one, rows, run, uid, now, fail, json, hash, admin } from "./common.js";
+import {
+  one,
+  rows,
+  run,
+  uid,
+  now,
+  fail,
+  json,
+  hash,
+  admin,
+  isStaff,
+  resolvePublicOrigin,
+  clientIp,
+} from "./common.js";
 const jwks = createRemoteJWKSet(
   new URL("https://www.googleapis.com/oauth2/v3/certs"),
 );
 const cookie = (value, age = 28800) =>
   `arks_session=${value}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${age}`;
-export const getCookie = (r, name) =>
+const getCookie = (r, name) =>
   r.headers
     .get("cookie")
     ?.split(";")
@@ -38,7 +50,7 @@ async function passwordHash(password, salt) {
     .map((x) => x.toString(16).padStart(2, "0"))
     .join("");
 }
-export async function session(db, user) {
+async function session(db, user) {
   const raw = uid() + uid();
   await run(
     db,
@@ -67,13 +79,9 @@ export async function authRoutes(req, env) {
   if (p === "/api/auth/config")
     return json({
       google_ready: !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET),
-      mode: env.AUTH_MODE || "sites",
-      entra_ready: entraReady(env),
-      portal_ready: env.PORTAL_READY !== false,
+      mode: env.AUTH_MODE || "google",
+      public_origin: resolvePublicOrigin(req, env),
     });
-  if (env.AUTH_MODE === "entra" && p.startsWith("/api/auth/google/"))
-    fail(404, "Use institute sign-in for this campus.");
-  if (p.startsWith("/api/auth/entra/")) return entraRoutes(req, env);
   if (p === "/api/auth/logout" && req.method === "POST") {
     const t = getCookie(req, "arks_session");
     if (t) await run(db, "DELETE FROM auth_sessions WHERE id=?", await hash(t));
@@ -86,9 +94,7 @@ export async function authRoutes(req, env) {
         .toLowerCase(),
       password = String(d.password || "");
     if (password.length > 256) fail(400, "Invalid credentials.");
-    const key = await hash(
-        email + ":" + (req.headers.get("CF-Connecting-IP") || "unknown"),
-      ),
+    const key = await hash(email + ":" + clientIp(req)),
       time = Date.now();
     await run(
       db,
@@ -106,7 +112,7 @@ export async function authRoutes(req, env) {
       fail(429, "Too many login attempts. Try again in 15 minutes.");
     const u = await one(
       db,
-      "SELECT u.*,c.salt,c.password_hash FROM users u JOIN admin_credentials c ON c.user_id=u.id WHERE lower(u.email)=? AND u.active=1 AND u.role='admin'",
+      "SELECT u.*,c.salt,c.password_hash FROM users u JOIN admin_credentials c ON c.user_id=u.id WHERE lower(u.email)=? AND u.active=1 AND u.role IN ('admin','trainer')",
       email,
     );
     const actual = await passwordHash(
@@ -116,7 +122,9 @@ export async function authRoutes(req, env) {
     if (!u || actual !== u.password_hash)
       fail(401, "Email or password is incorrect.");
     await run(db, "DELETE FROM auth_limits WHERE id=?", key);
-    return json({ ok: true }, 200, { "Set-Cookie": await session(db, u) });
+    return json({ ok: true, role: u.role }, 200, {
+      "Set-Cookie": await session(db, u),
+    });
   }
   if (p === "/api/auth/google/start") {
     if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET)
@@ -130,10 +138,11 @@ export async function authRoutes(req, env) {
       nonce,
       new Date(Date.now() + 600000).toISOString(),
     );
+    const pubOrigin = resolvePublicOrigin(req, env);
     const dest = new URL("https://accounts.google.com/o/oauth2/v2/auth");
     dest.search = new URLSearchParams({
       client_id: env.GOOGLE_CLIENT_ID,
-      redirect_uri: new URL("/api/auth/google/callback", req.url).href,
+      redirect_uri: new URL("/api/auth/google/callback", pubOrigin).href,
       response_type: "code",
       scope: "openid email profile",
       state,
@@ -161,13 +170,14 @@ export async function authRoutes(req, env) {
     );
     if (!saved) fail(403, "Sign-in expired.");
     await run(db, "DELETE FROM auth_states WHERE id=?", saved.id);
+    const pubOrigin = resolvePublicOrigin(req, env);
     const r = await fetch("https://oauth2.googleapis.com/token", {
       method: "POST",
       body: new URLSearchParams({
         code: params.get("code") || "",
         client_id: env.GOOGLE_CLIENT_ID,
         client_secret: env.GOOGLE_CLIENT_SECRET,
-        redirect_uri: new URL("/api/auth/google/callback", req.url).href,
+        redirect_uri: new URL("/api/auth/google/callback", pubOrigin).href,
         grant_type: "authorization_code",
       }),
       signal: AbortSignal.timeout(15000),
@@ -200,10 +210,15 @@ export async function authRoutes(req, env) {
       );
     let u = await one(db, "SELECT * FROM users WHERE email=?", email);
     if (u && !u.active) fail(403, "Your account is disabled.");
-    if (!invites.length && !groups.length && u?.role !== "admin")
+    if (!invites.length && !groups.length && !isStaff(u))
       fail(403, "Your administrator has not granted access to this email.");
     if (!u) {
-      u = { id: uid(), email, name: claims.name || email.split("@")[0] };
+      u = {
+        id: uid(),
+        email,
+        name: claims.name || email.split("@")[0],
+        role: "student",
+      };
       await run(
         db,
         "INSERT INTO users(id,email,name,role,created) VALUES (?,?,?,'student',?)",
@@ -223,9 +238,11 @@ export async function authRoutes(req, env) {
         v.fee || 0,
         now(),
       );
-    // Local invitations can explicitly grant admin; remote group membership never grants admin.
+    // Local invitations can explicitly grant admin or trainer; remote group membership never grants staff roles.
     if (invites.some((i) => i.role === "admin"))
       await run(db, "UPDATE users SET role='admin' WHERE id=?", u.id);
+    else if (invites.some((i) => i.role === "trainer") && u.role !== "admin")
+      await run(db, "UPDATE users SET role='trainer' WHERE id=?", u.id);
     return new Response(null, {
       status: 302,
       headers: {
@@ -249,19 +266,32 @@ export async function setAdminPassword(db, u, d) {
     .trim()
     .toLowerCase();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) fail(400, "Enter an email.");
+  const requestedRole = d.role === "trainer" ? "trainer" : "admin";
   let target = await one(db, "SELECT * FROM users WHERE email=?", email);
   if (!target) {
-    target = { id: uid() };
+    target = { id: uid(), role: requestedRole };
     await run(
       db,
-      "INSERT INTO users(id,email,name,role,created) VALUES (?,?,?,'admin',?)",
+      "INSERT INTO users(id,email,name,role,created) VALUES (?,?,?,?,?)",
       target.id,
       email,
       d.name || email.split("@")[0],
+      requestedRole,
       now(),
     );
   }
-  await run(db, "UPDATE users SET role='admin',active=1 WHERE id=?", target.id);
+  const finalRole = d.role
+    ? requestedRole
+    : target.role === "trainer"
+      ? "trainer"
+      : "admin";
+  await run(
+    db,
+    "UPDATE users SET role=?,name=COALESCE(NULLIF(?,''),name),active=1 WHERE id=?",
+    finalRole,
+    String(d.name || "").trim(),
+    target.id,
+  );
   const salt = uid() + uid();
   await run(
     db,
@@ -271,5 +301,5 @@ export async function setAdminPassword(db, u, d) {
     await passwordHash(d.password, salt),
   );
   await run(db, "DELETE FROM auth_sessions WHERE user_id=?", target.id);
-  return json({ ok: true });
+  return json({ ok: true, role: finalRole });
 }

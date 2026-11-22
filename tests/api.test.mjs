@@ -6,7 +6,11 @@ const owner = { id: "owner", email: "owner@arks.test" },
   student = { id: "student", email: "student@arks.test" },
   outsider = { id: "outsider", email: "outsider@arks.test" };
 async function campus() {
-  const env = { DB: await database(), BUCKET: memoryBucket() };
+  const env = {
+    DB: await database(),
+    BUCKET: memoryBucket(),
+    LOCAL_DEV_OWNER: "true",
+  };
   async function call(user, path, body) {
     const headers = {};
     if (user) {
@@ -298,7 +302,12 @@ test("uploads are durable and private, with size/type validation", async () => {
         "oai-authenticated-user-email": user.email,
       },
     });
-  assert.equal(await (await api(request(owner), env)).text(), "my solution");
+  const ownerFileRes = await api(request(owner), env);
+  assert.equal(await ownerFileRes.text(), "my solution");
+  assert.match(
+    ownerFileRes.headers.get("Content-Security-Policy") || "",
+    /sandbox/,
+  );
   assert.equal((await api(request(student), env)).status, 403);
 });
 test("cross-origin mutation is rejected", async () => {
@@ -317,4 +326,486 @@ test("cross-origin mutation is rejected", async () => {
     env,
   );
   assert.equal(r.status, 403);
+});
+
+test("custom domain and Azure SWA origins pass verifyOrigin and resolvePublicOrigin for OAuth, while evil origins and production header spoofing are rejected", async () => {
+  const { env, call } = await campus();
+
+  // Configure staff password so POST /api/auth/admin can be tested across origins
+  await call(owner, "admin/password", {
+    email: "head@arks.test",
+    password: "head-admin-secure-password-123",
+    name: "Head Admin",
+    role: "admin",
+  });
+
+  for (const allowedOrigin of [
+    "https://student-portal.arksglobalasia.cloud",
+    "https://yellow-tree-0ceb4a400.3.azurestaticapps.net",
+  ]) {
+    const authRes = await api(
+      new Request("https://internal-worker.test/api/auth/admin", {
+        method: "POST",
+        headers: {
+          Origin: allowedOrigin,
+          "X-Forwarded-Host": "student-portal.arksglobalasia.cloud",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          email: "head@arks.test",
+          password: "head-admin-secure-password-123",
+        }),
+      }),
+      env,
+    );
+    assert.equal(authRes.status, 200);
+    const authBody = await authRes.json();
+    assert.equal(authBody.ok, true);
+    assert.equal(authBody.role, "admin");
+  }
+
+  // Evil origin rejected with 403 Invalid request origin.
+  const evilRes = await api(
+    new Request("https://student-portal.arksglobalasia.cloud/api/auth/admin", {
+      method: "POST",
+      headers: {
+        Origin: "https://evil.example.com",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        email: "head@arks.test",
+        password: "head-admin-secure-password-123",
+      }),
+    }),
+    env,
+  );
+  assert.equal(evilRes.status, 403);
+  assert.equal((await evilRes.json()).error, "Invalid request origin.");
+
+  // Google OAuth start succeeds with both origins and X-Forwarded-Host
+  env.GOOGLE_CLIENT_ID = "google-client-id";
+  env.GOOGLE_CLIENT_SECRET = "google-client-secret";
+  for (const allowedOrigin of [
+    "https://student-portal.arksglobalasia.cloud",
+    "https://yellow-tree-0ceb4a400.3.azurestaticapps.net",
+  ]) {
+    const oauthStart = await api(
+      new Request(allowedOrigin + "/api/auth/google/start", {
+        headers: {
+          Origin: allowedOrigin,
+          "X-Forwarded-Host": new URL(allowedOrigin).host,
+          "X-Forwarded-Proto": "https",
+        },
+      }),
+      env,
+    );
+    assert.equal(oauthStart.status, 302);
+    assert.ok(
+      oauthStart.headers
+        .get("Location")
+        .includes(
+          encodeURIComponent(allowedOrigin + "/api/auth/google/callback"),
+        ),
+    );
+  }
+
+  // Production environment without LOCAL_DEV_OWNER rejects oai-authenticated-user-* headers
+  const prodEnv = { ...env, LOCAL_DEV_OWNER: undefined };
+  const spoofed = await api(
+    new Request("https://student-portal.arksglobalasia.cloud/api/bootstrap", {
+      headers: {
+        "oai-authenticated-user-id": owner.id,
+        "oai-authenticated-user-email": owner.email,
+      },
+    }),
+    prodEnv,
+  );
+  assert.equal(spoofed.status, 401);
+});
+
+test("3-role RBAC allows trainer password sign-in and academic actions, and blocks trainer from payments, courses, passwords, and role changes", async () => {
+  const { env, call } = await campus();
+  const trainerUser = { id: "trainer1", email: "trainer@arks.test" };
+
+  // Head/Admin sets password for trainer account
+  const setPw = await call(owner, "admin/password", {
+    email: trainerUser.email,
+    password: "trainer-secure-password-2026",
+    name: "Lead Trainer",
+    role: "trainer",
+  });
+  assert.equal(setPw.status, 200);
+  assert.equal(setPw.data.role, "trainer");
+
+  // Trainer signs in via POST /api/auth/admin in production mode (no LOCAL_DEV_OWNER)
+  const prodEnv = { ...env, LOCAL_DEV_OWNER: undefined };
+  const loginRes = await api(
+    new Request("https://student-portal.arksglobalasia.cloud/api/auth/admin", {
+      method: "POST",
+      headers: {
+        Origin: "https://student-portal.arksglobalasia.cloud",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        email: trainerUser.email,
+        password: "trainer-secure-password-2026",
+      }),
+    }),
+    prodEnv,
+  );
+  assert.equal(loginRes.status, 200);
+  const loginJson = await loginRes.json();
+  assert.equal(loginJson.role, "trainer");
+  const trainerCookie = loginRes.headers.get("set-cookie").split(";")[0];
+
+  // Trainer session cookie works for /api/bootstrap and /api/admin/data in production mode
+  const bootCookieRes = await api(
+    new Request("https://student-portal.arksglobalasia.cloud/api/bootstrap", {
+      headers: { cookie: trainerCookie },
+    }),
+    prodEnv,
+  );
+  assert.equal(bootCookieRes.status, 200);
+  assert.equal((await bootCookieRes.json()).user.role, "trainer");
+
+  assert.equal((await call(trainerUser, "admin/data")).status, 200);
+  assert.equal((await call(trainerUser, "admin/data")).data.payments.length, 0);
+
+  // Trainer can schedule session series, create/edit content, complete live sessions, review labs, reply to tickets, and bulk invite students
+  const seriesRes = await call(trainerUser, "admin/sessions", {
+    batch_id: "sandbox",
+    title: "Evening Class {n}",
+    dates: ["2026-11-25T16:00:00Z"],
+    url: "https://meet.google.com/evening-class",
+  });
+  assert.equal(seriesRes.status, 200);
+
+  const createdLive = await call(trainerUser, "admin/save", {
+    entity: "content",
+    values: {
+      course_id: "devops",
+      batch_id: "sandbox",
+      kind: "live",
+      title: "Kubernetes Deep Dive",
+      topic: "Kubernetes",
+      topic_order: 4,
+      url: "https://meet.google.com/k8s-live",
+      published: 1,
+    },
+  });
+  assert.equal(createdLive.status, 200);
+
+  const completed = await call(trainerUser, "admin/complete-session", {
+    session_id: createdLive.data.id,
+    recording_url: "https://drive.google.com/file/d/rec123456789/view",
+    advance_covered: true,
+  });
+  assert.equal(completed.status, 200);
+  assert.ok(completed.data.recording_id);
+  const updatedBatch = await env.DB.prepare(
+    "SELECT covered FROM batches WHERE id='sandbox'",
+  ).first();
+  assert.equal(updatedBatch.covered, 4);
+
+  const bulk = await call(trainerUser, "admin/bulk-invite", {
+    batch_id: "sandbox",
+    fee: 50000,
+    csv: "learner1@arks.test,Learner One\nlearner2@arks.test,Learner Two,60000",
+  });
+  assert.equal(bulk.status, 200);
+  assert.equal(bulk.data.invited, 2);
+
+  // Student submits lab and ticket; Trainer reviews lab and replies to ticket
+  await call(student, "bootstrap");
+  await call(owner, "admin/save", {
+    entity: "invitations",
+    values: { email: student.email, batch_id: "sandbox", fee: 50000 },
+  });
+  await call(student, "bootstrap");
+  await call(student, "submissions", {
+    batch_id: "sandbox",
+    content_id: "lab-git",
+    body: "kubectl apply -f deployment.yaml",
+  });
+  const subId = (await call(trainerUser, "admin/data")).data.submissions[0].id;
+  assert.equal(
+    (
+      await call(trainerUser, "admin/review", {
+        id: subId,
+        status: "accepted",
+        feedback: "Verified by Trainer.",
+      })
+    ).status,
+    200,
+  );
+  const tkt = await call(student, "tickets", {
+    batch_id: "sandbox",
+    category: "academic",
+    subject: "Pod crashloop",
+    body: "Why is my pod restarting?",
+  });
+  assert.equal(
+    (
+      await call(trainerUser, "admin/reply", {
+        id: tkt.data.id,
+        reply: "Check container logs with kubectl logs --previous.",
+        status: "resolved",
+      })
+    ).status,
+    200,
+  );
+
+  // Record a payment as Head/Admin so we can verify trainer cannot record or delete payments
+  const enrollment = (await call(student, "campus?batch=sandbox")).data
+    .enrollment;
+  assert.equal(
+    (
+      await call(owner, "admin/payment", {
+        enrollment_id: enrollment.id,
+        amount: 10000,
+        reference: "HEAD-PAY-1",
+        paid_at: "2026-11-20",
+      })
+    ).status,
+    200,
+  );
+  const paymentRow = await env.DB.prepare("SELECT id FROM payments LIMIT 1").first();
+
+  // Trainer is strictly blocked (403) from Head/Admin operations:
+  // 1) /api/admin/payment
+  assert.equal(
+    (
+      await call(trainerUser, "admin/payment", {
+        enrollment_id: enrollment.id,
+        amount: 5000,
+        reference: "TRAINER-PAY-1",
+        paid_at: "2026-11-21",
+      })
+    ).status,
+    403,
+  );
+  // 2) /api/admin/role
+  assert.equal(
+    (
+      await call(trainerUser, "admin/role", {
+        id: student.id,
+        role: "admin",
+      })
+    ).status,
+    403,
+  );
+  // 3) /api/admin/password
+  assert.equal(
+    (
+      await call(trainerUser, "admin/password", {
+        email: "newstaff@arks.test",
+        password: "very-long-secure-password-123",
+        role: "trainer",
+      })
+    ).status,
+    403,
+  );
+  // 4) /api/admin/access
+  assert.equal(
+    (
+      await call(trainerUser, "admin/access", {
+        user_id: student.id,
+        active: false,
+      })
+    ).status,
+    403,
+  );
+  // 5) Creating/modifying courses
+  assert.equal(
+    (
+      await call(trainerUser, "admin/save", {
+        entity: "courses",
+        values: {
+          title: "Unauthorized Course",
+          description: "Desc",
+          fee: 100,
+          currency: "INR",
+          syllabus: JSON.stringify([{ title: "T1", detail: "D1" }]),
+        },
+      })
+    ).status,
+    403,
+  );
+  // 6) Inviting admin/trainer roles
+  assert.equal(
+    (
+      await call(trainerUser, "admin/save", {
+        entity: "invitations",
+        values: {
+          email: "escalate@arks.test",
+          batch_id: "sandbox",
+          role: "admin",
+          fee: 0,
+        },
+      })
+    ).status,
+    403,
+  );
+  // 7) Deleting courses or payments
+  assert.equal(
+    (
+      await call(trainerUser, "admin/delete", {
+        entity: "courses",
+        id: "devops",
+      })
+    ).status,
+    403,
+  );
+  assert.equal(
+    (
+      await call(trainerUser, "admin/delete", {
+        entity: "payments",
+        id: paymentRow.id,
+      })
+    ).status,
+    403,
+  );
+});
+
+test("test save preserves batch_id/source_ids/ai_generated, supports image resources, threaded tickets, grade override, retake and delete", async () => {
+  const { env, call } = await campus();
+  await env.DB.prepare(
+    "INSERT INTO tests (id,course_id,title,kind,topic_order,duration,batch_id,source_ids,ai_generated,questions,published) VALUES ('ai-quiz','devops','AI Daily','daily',1,30,'sandbox','[\"notes-git\"]',1,?,0)",
+  )
+    .bind(
+      JSON.stringify([
+        {
+          prompt: "What does git status show?",
+          options: ["Working tree status", "Remote branches"],
+          answer: 0,
+          explanation: "Shows working tree status.",
+        },
+      ]),
+    )
+    .run();
+
+  const savedTest = await call(owner, "admin/save", {
+    entity: "tests",
+    values: {
+      id: "ai-quiz",
+      course_id: "devops",
+      title: "AI Daily (Published)",
+      kind: "daily",
+      topic_order: 1,
+      duration: 30,
+      published: 1,
+      questions: JSON.stringify([
+        {
+          prompt: "What does git status show?",
+          options: ["Working tree status", "Remote branches"],
+          answer: 0,
+          explanation: "Shows working tree status.",
+        },
+      ]),
+    },
+  });
+  assert.equal(savedTest.status, 200);
+  const row = await env.DB.prepare("SELECT * FROM tests WHERE id='ai-quiz'").first();
+  assert.equal(row.batch_id, "sandbox");
+  assert.equal(row.ai_generated, 1);
+  assert.equal(row.source_ids, '["notes-git"]');
+
+  // Image content creation & self-completion
+  const imgContent = await call(owner, "admin/save", {
+    entity: "content",
+    values: {
+      course_id: "devops",
+      batch_id: "sandbox",
+      kind: "image",
+      title: "VPC Architecture Diagram",
+      topic: "Networking",
+      topic_order: 1,
+      published: 1,
+    },
+  });
+  assert.equal(imgContent.status, 200);
+  assert.equal(
+    (
+      await call(owner, "complete", {
+        batch_id: "sandbox",
+        content_id: imgContent.data.id,
+        complete: true,
+      })
+    ).status,
+    200,
+  );
+
+  // Start, submit, manual grade override, and grant retake
+  const started = await call(owner, "tests/start", {
+    batch_id: "sandbox",
+    test_id: "ai-quiz",
+  });
+  await call(owner, "tests/submit", {
+    attempt_id: started.data.id,
+    answers: [1],
+  });
+  assert.equal(
+    (
+      await call(owner, "admin/attempt-action", {
+        attempt_id: started.data.id,
+        mode: "grade",
+        score: 88,
+      })
+    ).status,
+    200,
+  );
+  assert.equal((await call(owner, "results/" + started.data.id)).data.score, 88);
+
+  assert.equal(
+    (
+      await call(owner, "admin/attempt-action", {
+        attempt_id: started.data.id,
+        mode: "reset",
+      })
+    ).status,
+    200,
+  );
+  assert.equal(
+    (
+      await call(owner, "tests/start", {
+        batch_id: "sandbox",
+        test_id: "ai-quiz",
+      })
+    ).status,
+    200,
+  );
+
+  // Threaded tickets with category
+  const createdTicket = await call(owner, "tickets", {
+    batch_id: "sandbox",
+    category: "lab",
+    subject: "Docker volume permission",
+    body: "Container cannot write to bind mount.",
+  });
+  assert.equal(createdTicket.status, 200);
+  await call(owner, "admin/reply", {
+    id: createdTicket.data.id,
+    reply: "Check UID/GID mapping or :Z flag.",
+    status: "open",
+  });
+  await call(owner, "tickets", {
+    ticket_id: createdTicket.data.id,
+    body: "That fixed it, thank you!",
+  });
+  const ticketRow = await env.DB.prepare("SELECT * FROM tickets WHERE id=?")
+    .bind(createdTicket.data.id)
+    .first();
+  assert.equal(ticketRow.category, "lab");
+  assert.equal(JSON.parse(ticketRow.messages).length, 3);
+
+  // Safe entity deletion
+  assert.equal(
+    (
+      await call(owner, "admin/delete", {
+        entity: "content",
+        id: imgContent.data.id,
+      })
+    ).status,
+    200,
+  );
 });

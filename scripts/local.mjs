@@ -36,7 +36,11 @@ const server = http.createServer(async (req, res) => {
         ? undefined
         : Buffer.concat(chunks),
     });
-    const out = await worker.fetch(request, { DB, BUCKET });
+    const out = await worker.fetch(request, {
+      DB,
+      BUCKET,
+      LOCAL_DEV_OWNER: "true",
+    });
     res.writeHead(out.status, Object.fromEntries(out.headers));
     res.end(Buffer.from(await out.arrayBuffer()));
   } catch {

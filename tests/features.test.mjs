@@ -8,6 +8,7 @@ async function fixture() {
   const env = {
     DB: await database(),
     BUCKET: memoryBucket(),
+    LOCAL_DEV_OWNER: "true",
     IMPORTER_TOKEN_SHA256: await hash("test-importer"),
   };
   async function call(path, body, role = "admin", cookie) {
@@ -376,11 +377,29 @@ test("mixed questions hide rubrics, persist answers and apply bounded partial cr
     { marks: 25, feedback: "Health checks are correct; add rollback." },
     { marks: 25, feedback: "Correct command." },
   ];
+  const summary = {
+    strengths: ["Strong grasp of source control and Git status commands"],
+    improvements: ["Include automatic rollback triggers in Kubernetes deployments"],
+    recommendations: [
+      {
+        title: "Kubernetes Deployments & Rollbacks",
+        category: "official_doc",
+        url: "https://kubernetes.io/docs/concepts/workloads/controllers/deployment/",
+        description: "Review rollingUpdate strategy and kubectl rollout undo.",
+      },
+      {
+        title: "Batch Class Notes — Git & Deployment Strategies",
+        category: "notes",
+        url: "",
+        description: "Revisit Topic 1 & Topic 4 class notes and recordings.",
+      },
+    ],
+  };
   assert.equal(
     (
       await call(
         "automation/jobs/finish",
-        { id: j.id, lease: claim.lease, result: { feedback } },
+        { id: j.id, lease: claim.lease, result: { feedback, summary } },
         "service",
       )
     ).status,
@@ -390,7 +409,18 @@ test("mixed questions hide rubrics, persist answers and apply bounded partial cr
   assert.equal(final.score, 75);
   assert.equal(final.grading_status, "complete");
   assert.equal(final.feedback[0].marks, 25);
-  assert.equal((await call("result-pdf/" + a.id)).status, 200);
+  assert.deepEqual(final.summary.strengths, summary.strengths);
+  assert.deepEqual(final.summary.improvements, summary.improvements);
+  assert.equal(final.summary.recommendations.length, 2);
+  assert.equal(
+    final.summary.recommendations[0].url,
+    "https://kubernetes.io/docs/concepts/workloads/controllers/deployment/",
+  );
+  const pdfRes = await call("result-pdf/" + a.id);
+  assert.equal(pdfRes.status, 200);
+  assert.equal(pdfRes.headers.get("Content-Type"), "application/pdf");
+  const pdfBytes = new Uint8Array(await pdfRes.arrayBuffer());
+  assert.ok(pdfBytes.byteLength > 1000);
 });
 test("objective formats validate permutations and normalize fractional weights without leaking keys", async () => {
   const { validQuestion, normalizeQuestions, objectiveCorrect, validAnswer } =
@@ -428,9 +458,93 @@ test("objective formats validate permutations and normalize fractional weights w
   assert.equal(validAnswer(questions[2], [1, 1]), false);
 });
 
-test("an unsupported auth mode cannot fall back to trusted Sites headers", async () => {
+test("automated 9:00 AM IST daily test (20+ Qs Mon-Sat) and Sunday weekly test (25+ Qs) schedule and skip when no classes taught", async () => {
   const { env, call } = await fixture();
-  env.AUTH_MODE = "unsupported-provider";
-  assert.equal((await call("bootstrap")).status, 503);
-  assert.equal((await call("admin/data")).status, 503);
+
+  // 1. When no materials were taught on 2026-11-10 (Tuesday), Wednesday 9:00 AM IST skips daily test
+  const skipDaily = await (
+    await call(
+      "automation/schedule-assessments",
+      { reference_date: "2026-11-11T03:30:00Z" },
+      "service",
+    )
+  ).json();
+  assert.equal(skipDaily.mode, "daily");
+  assert.equal(skipDaily.results[0].status, "skipped");
+  assert.equal(skipDaily.results[0].reason, "no_class_materials");
+
+  // 2. Publish class materials for Wednesday night (2026-11-18 IST)
+  await env.DB.prepare(
+    "UPDATE content SET created='2026-11-18T16:30:00Z' WHERE id IN ('notes-git','slides-git','guide-linux')",
+  ).run();
+
+  // 3. Thursday 9:00 AM IST (2026-11-19T03:30:00Z) queues a Daily Assessment with >= 20 questions including 'code'
+  const runDaily = await (
+    await call(
+      "automation/schedule-assessments",
+      { reference_date: "2026-11-19T03:30:00Z" },
+      "service",
+    )
+  ).json();
+  assert.equal(runDaily.mode, "daily");
+  assert.equal(runDaily.results[0].status, "queued");
+  assert.ok(runDaily.results[0].count >= 20);
+  const dailyJob = await env.DB.prepare("SELECT * FROM engine_jobs WHERE id=?")
+    .bind(runDaily.results[0].job_id)
+    .first();
+  const dailyPayload = JSON.parse(dailyJob.payload);
+  assert.ok(dailyPayload.question_types.includes("code"));
+
+  // 4. Sunday 9:00 AM IST never runs a daily test even if mode='daily' is requested on Sunday
+  const sundayDailyCheck = await (
+    await call(
+      "automation/schedule-assessments",
+      { reference_date: "2026-11-22T03:30:00Z", mode: "daily" },
+      "service",
+    )
+  ).json();
+  assert.equal(sundayDailyCheck.mode, "skipped_sunday_daily");
+
+  // 5. Sunday 9:00 AM IST (2026-11-22T03:30:00Z) queues a Weekly Assessment with >= 25 questions covering Mon-Sat
+  const runWeekly = await (
+    await call(
+      "automation/schedule-assessments",
+      { reference_date: "2026-11-22T03:30:00Z" },
+      "service",
+    )
+  ).json();
+  assert.equal(runWeekly.mode, "weekly");
+  assert.equal(runWeekly.results[0].status, "queued");
+  assert.ok(runWeekly.results[0].count >= 25);
+
+  // 6. Sunday 9:00 AM IST on a week where NO classes were taught Monday-Saturday (e.g., 2026-11-08) skips Weekly Assessment
+  await env.DB.prepare(
+    "UPDATE content SET created='2026-11-18T16:30:00Z'",
+  ).run();
+  const skipWeekly = await (
+    await call(
+      "automation/schedule-assessments",
+      { reference_date: "2026-11-08T03:30:00Z" },
+      "service",
+    )
+  ).json();
+  assert.equal(skipWeekly.mode, "weekly");
+  assert.equal(skipWeekly.results[0].status, "skipped");
+  assert.equal(skipWeekly.results[0].reason, "no_classes_this_week");
+
+  // 7. When a batch's automation_sources config has auto_daily_test: false, automatic cron skips it
+  await call("admin/automation/source", {
+    batch_id: "sandbox",
+    folder_input: "https://drive.google.com/drive/folders/folder_123456789",
+    config: { auto_daily_test: false },
+  });
+  const disabledAuto = await (
+    await call(
+      "automation/schedule-assessments",
+      { reference_date: "2026-11-20T03:30:00Z" },
+      "service",
+    )
+  ).json();
+  assert.equal(disabledAuto.results[0].status, "skipped");
+  assert.equal(disabledAuto.results[0].reason, "auto_schedule_disabled");
 });

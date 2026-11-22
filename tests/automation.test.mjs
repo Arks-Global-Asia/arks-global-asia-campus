@@ -11,6 +11,7 @@ async function setup() {
   const env = {
     DB: await database(),
     BUCKET: memoryBucket(),
+    LOCAL_DEV_OWNER: "true",
     IMPORTER_TOKEN_SHA256: createHash("sha256").update(token).digest("hex"),
   };
   async function call(path, body, who = "service") {
@@ -290,4 +291,111 @@ test("external test release requires a student form URL, not an editor or answer
     (c) => c.kind === "test_link",
   );
   assert.equal(c.url, "");
+});
+
+test("images, resource_creation guides, yaml/sh scripts, exclusion filters, category override and 1-click bunch approval work end-to-end", async () => {
+  assert.equal(
+    classifyMaterial("k8s-architecture.png", "batch/images", "image/png"),
+    "image",
+  );
+  assert.equal(
+    classifyMaterial("vpc-topology.jpg", "batch/diagrams", "image/jpeg"),
+    "image",
+  );
+  assert.equal(
+    classifyMaterial("aks-cluster-setup.pdf", "batch/resource_creation", "application/pdf"),
+    "guide",
+  );
+  assert.equal(
+    classifyMaterial("deployment.yaml", "batch/manifests", "text/yaml"),
+    "notes",
+  );
+  assert.equal(
+    classifyMaterial("bootstrap.sh", "batch/scripts", "text/x-shellscript"),
+    "notes",
+  );
+  assert.equal(
+    classifyMaterial(
+      "secret-notes.pdf",
+      "batch/custom_hidden_dir",
+      "application/pdf",
+      { excluded_folders: ["custom_hidden_dir"] },
+    ),
+    "private",
+  );
+  assert.equal(
+    classifyMaterial(
+      "backup-notes.bak",
+      "batch/notes",
+      "application/octet-stream",
+      { excluded_extensions: ["bak", ".tmp"] },
+    ),
+    "private",
+  );
+
+  const { call, source } = await setup();
+  const r = (await call("automation/claim", { source_id: source })).data;
+  const ing = await call("automation/ingest", {
+    run_id: r.run_id,
+    items: [
+      item({
+        drive_file_id: "file_img_12345",
+        url: "https://drive.google.com/file/d/file_img_12345/view",
+        name: "Day09_K8s_Diagram.png",
+        source_path: "batch/images",
+        mime: "image/png",
+        modified_time: "2026-11-20T16:15:00Z",
+      }),
+      item({
+        drive_file_id: "file_guide_12345",
+        url: "https://drive.google.com/file/d/file_guide_12345/view",
+        name: "Day09_Resource_Creation_Guide.pdf",
+        source_path: "batch/resource_creation",
+        mime: "application/pdf",
+        modified_time: "2026-11-20T16:20:00Z",
+      }),
+      item({
+        drive_file_id: "file_restricted_12345",
+        url: "https://drive.google.com/file/d/file_restricted_12345/view",
+        name: "Day09_Working_Draft.md",
+        source_path: "batch/draft",
+        mime: "text/markdown",
+        modified_time: "2026-11-20T16:25:00Z",
+      }),
+    ],
+  });
+  assert.equal(ing.status, 200);
+  assert.equal(ing.data.items[0].status, "pending");
+  assert.equal(ing.data.items[1].status, "pending");
+  assert.equal(ing.data.items[2].status, "restricted");
+
+  // 1-click Bunch Approval approves both pending student-safe items for class_date 2026-11-20 and publishes them to content
+  const bunch = await call(
+    "admin/automation/approve-batch",
+    {
+      batch_id: "sandbox",
+      class_date: "2026-11-20",
+      confirmed_student_safe: true,
+    },
+    owner,
+  );
+  assert.equal(bunch.status, 200);
+  assert.equal(bunch.data.approved_count, 2);
+
+  const campusBeforeOverride = (await call("campus?batch=sandbox", null, owner)).data.content;
+  assert.ok(campusBeforeOverride.some((c) => c.kind === "image" && c.title.includes("Day09")));
+  assert.ok(campusBeforeOverride.some((c) => c.kind === "guide" && c.title.includes("Day09")));
+
+  // Trainer/Admin can override category on restricted item when explicitly choosing a student-facing kind
+  const overridden = await call(
+    "admin/automation/review",
+    {
+      id: ing.data.items[2].id,
+      action: "approve",
+      kind: "notes",
+      confirmed_student_safe: true,
+    },
+    owner,
+  );
+  assert.equal(overridden.status, 200);
 });

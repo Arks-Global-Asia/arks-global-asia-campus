@@ -13,14 +13,13 @@ def az(*args, data=None, output=False):
         raise SystemExit('Azure command failed: '+args[0]+' '+args[1]+'. Raw output suppressed. Check sign-in, permissions and resource names.')
     return json.loads(result.stdout) if output and result.stdout else None
 
-from worker_config import load_worker_config
-try: cfg=load_worker_config()
-except RuntimeError as e: raise SystemExit(str(e))
+if not Path('azure-config.json').is_file():raise SystemExit('Restore azure-config.json beside this script first. Existing resources will be reused.')
+cfg=json.loads(Path('azure-config.json').read_text())
 az('account','set','--subscription',cfg['SUBSCRIPTION_ID'])
-print('Creating the engine queue; pausing the timer during worker upgrade and portal cutover.')
+print('Creating the engine queue; keeping the existing Drive schedule and credentials.')
 az('storage','queue','create','--account-name',cfg['STORAGE'],'--name','arks-engine-jobs','--auth-mode','key')
 key=getpass.getpass('DeepSeek API key (hidden; Enter to keep existing configuration): ').strip()
-settings=['AzureWebJobs.dispatch_batches.Disabled=true','AzureWebJobs.engine_dispatch.Disabled=false','AzureWebJobs.process_engine_job.Disabled=false']
+settings=['AzureWebJobs.engine_dispatch.Disabled=false','AzureWebJobs.process_engine_job.Disabled=false']
 if key:
     az('keyvault','secret','set','--vault-name',cfg['VAULT'],'--name','arks-deepseek-key','--file','/dev/stdin',data=key)
     settings.append('DEEPSEEK_API_KEY=@Microsoft.KeyVault(SecretUri=https://'+cfg['VAULT']+'.vault.azure.net/secrets/arks-deepseek-key/)')

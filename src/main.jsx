@@ -1,6 +1,3 @@
-import { DraftContext, DraftForm, useDraftState } from "./Drafts.jsx";
-import Performance from "./Performance.jsx";
-import { readApiResponse } from "../shared/http.js";
 import { QuestionInput, MixedQuestionBuilder } from "./QuestionControls.jsx";
 import {
   QUESTION_TYPES,
@@ -59,8 +56,8 @@ import {
   CheckCircle2,
 } from "lucide-react";
 import "./styles.css";
+
 const icons = {
-  results: ClipboardCheck,
   dashboard: LayoutDashboard,
   live: Video,
   recording: Play,
@@ -72,8 +69,14 @@ const icons = {
   tickets: MessageCircle,
   sop: BookOpen,
   admin: Settings,
-  docs: FileText,
+  overview: LayoutDashboard,
+  curriculum: BookOpen,
+  classroom: Video,
+  assessments: ClipboardCheck,
+  people: Layers,
+  support: MessageCircle,
 };
+
 const nav = [
   ["dashboard", "Overview"],
   ["live", "Live sessions"],
@@ -81,21 +84,65 @@ const nav = [
   ["resources", "Learning library"],
   ["lab", "Practice labs"],
   ["tests", "Assessments"],
-  ["results", "Results & performance"],
   ["progress", "My progress"],
   ["fees", "Course & fees"],
   ["tickets", "Queries & concerns"],
   ["sop", "Bootcamp guide"],
 ];
+
+const ADMIN_WORKSPACES = [
+  {
+    id: "overview",
+    label: "Overview",
+    defaultTab: "overview",
+    tabs: ["overview"],
+  },
+  {
+    id: "curriculum",
+    label: "Curriculum & Batches",
+    defaultTab: "batches",
+    tabs: ["batches", "settings", "courses"],
+  },
+  {
+    id: "classroom",
+    label: "Classroom & Content",
+    defaultTab: "automation",
+    tabs: ["automation", "schedule", "content"],
+  },
+  {
+    id: "assessments",
+    label: "Assessments & Labs",
+    defaultTab: "engine",
+    tabs: ["engine", "tests", "reports", "submissions"],
+  },
+  {
+    id: "people",
+    label: "Students & Team",
+    defaultTab: "users",
+    tabs: ["users", "invitations", "access", "payments"],
+  },
+  {
+    id: "support",
+    label: "Queries & Activity",
+    defaultTab: "tickets",
+    tabs: ["tickets", "audit"],
+  },
+];
+
 const kindName = {
   live: "Live session",
   recording: "Recording",
   notes: "Notes",
   lab: "Practice lab",
   slides: "Presentation",
-  guide: "Resource guide",
+  guide: "Resource Creation Guide",
+  image: "Image / Diagram",
   sop: "Bootcamp guide",
+  test_link: "External assessment",
 };
+
+const isStaffRole = (role) => role === "admin" || role === "trainer";
+
 async function api(path, body) {
   const r = await fetch(
     "/api/" + path,
@@ -109,8 +156,15 @@ async function api(path, body) {
           }
         : {},
   );
-  return readApiResponse(r);
+  const d = await r.json();
+  if (!r.ok) {
+    const e = new Error(d.error || "Something went wrong.");
+    e.status = r.status;
+    throw e;
+  }
+  return d;
 }
+
 const date = (s) =>
   s
     ? new Intl.DateTimeFormat("en", {
@@ -119,15 +173,18 @@ const date = (s) =>
         year: "numeric",
       }).format(new Date(s))
     : "Not scheduled";
+
 const money = (n, c = "INR") =>
   new Intl.NumberFormat("en-IN", {
     style: "currency",
     currency: c,
     maximumFractionDigits: 0,
   }).format((n || 0) / 100);
+
 function Badge({ children, tone = "" }) {
   return <span className={"badge " + tone}>{children}</span>;
 }
+
 function Empty({ title, body, action }) {
   return (
     <div className="empty">
@@ -140,6 +197,7 @@ function Empty({ title, body, action }) {
     </div>
   );
 }
+
 function Button({ children, onClick, secondary = false, ...props }) {
   return (
     <button
@@ -151,6 +209,13 @@ function Button({ children, onClick, secondary = false, ...props }) {
     </button>
   );
 }
+
+function isAnswered(val) {
+  if (val === null || val === undefined || val === "") return false;
+  if (Array.isArray(val)) return val.length > 0 && val.every((x) => x !== -1);
+  return true;
+}
+
 function App() {
   const [adminTab, setAdminTab] = useState("overview");
   const [boot, setBoot] = useState(null),
@@ -167,55 +232,26 @@ function App() {
     [busy, setBusy] = useState(false),
     [onboarding, setOnboarding] = useState(false),
     [install, setInstall] = useState(null);
-  const navigationHistory = useRef([]),
-    goingBack = useRef(false);
-  useEffect(() => {
-    const entry = { page, adminTab, adminMode };
-    if (goingBack.current) {
-      goingBack.current = false;
-      return;
-    }
-    const last = navigationHistory.current.at(-1);
-    if (!last || JSON.stringify(last) !== JSON.stringify(entry))
-      navigationHistory.current.push(entry);
-    if (navigationHistory.current.length > 50)
-      navigationHistory.current.shift();
-  }, [page, adminTab, adminMode]);
-  function goBack() {
-    if (modal) {
-      setModal(null);
-      return;
-    }
-    if (navigationHistory.current.length > 1) {
-      navigationHistory.current.pop();
-      const previous = navigationHistory.current.at(-1);
-      goingBack.current = true;
-      setPage(previous.page);
-      setAdminTab(previous.adminTab);
-      setAdminMode(previous.adminMode);
-    } else {
-      if (adminMode) setAdminTab("overview");
-      else navigate("dashboard");
-    }
-  }
   const noticeTimer = useRef();
   const firstLogin = useRef(true);
   const [loginRequired, setLoginRequired] = useState(false);
   const batch = boot?.batches.find((b) => b.id === batchId),
     course = boot?.courses.find((c) => c.id === batch?.course_id),
     syllabus = course ? JSON.parse(course.syllabus) : [];
+
   function toast(s) {
     setNotice(s);
     clearTimeout(noticeTimer.current);
     noticeTimer.current = setTimeout(() => setNotice(""), 4500);
   }
+
   async function init() {
     try {
       const b = await api("bootstrap");
       setBoot(b);
       setLoginRequired(false);
       if (firstLogin.current) {
-        setAdminMode(b.user.role === "admin");
+        setAdminMode(isStaffRole(b.user.role));
         firstLogin.current = false;
       }
       setBatchId((old) =>
@@ -228,11 +264,13 @@ function App() {
       if (e.status === 401) setLoginRequired(true);
     }
   }
+
   async function refresh() {
     if (batchId)
       setData(await api("campus?batch=" + encodeURIComponent(batchId)));
     if (adminMode) setAdminData(await api("admin/data"));
   }
+
   useEffect(() => {
     init();
     if ("serviceWorker" in navigator)
@@ -244,6 +282,7 @@ function App() {
     window.addEventListener("beforeinstallprompt", fn);
     return () => window.removeEventListener("beforeinstallprompt", fn);
   }, []);
+
   useEffect(() => {
     let active = true;
     if (batchId) {
@@ -260,12 +299,14 @@ function App() {
       active = false;
     };
   }, [batchId]);
+
   useEffect(() => {
     if (adminMode)
       api("admin/data")
         .then(setAdminData)
         .catch((e) => toast(e.message));
   }, [adminMode]);
+
   async function act(fn, msg) {
     setBusy(true);
     try {
@@ -280,11 +321,13 @@ function App() {
       setBusy(false);
     }
   }
+
   function navigate(p) {
     setPage(p);
     setMobile(false);
     setSearch("");
   }
+
   function download(name, content, type = "text/plain") {
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([content], { type }));
@@ -292,13 +335,17 @@ function App() {
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   }
+
   function openResource(c) {
     setModal({ type: "resource", item: c });
   }
+
   const done = new Set(data?.completions.map((c) => c.content_id) || []),
     trackable =
       data?.content.filter((c) =>
-        ["notes", "slides", "recording", "guide", "lab"].includes(c.kind),
+        ["notes", "slides", "recording", "guide", "lab", "image"].includes(
+          c.kind,
+        ),
       ) || [],
     completed = trackable.filter((c) => done.has(c.id)).length,
     percent = trackable.length
@@ -325,6 +372,7 @@ function App() {
             results.length,
         )
       : 0;
+
   if (loginRequired)
     return (
       <Login
@@ -334,6 +382,7 @@ function App() {
         }}
       />
     );
+
   if (!boot)
     return (
       <div className="loading-page">
@@ -343,6 +392,12 @@ function App() {
         {error ? (
           <>
             <p>{error}</p>
+            <button
+              className="button"
+              onClick={() => setLoginRequired(true)}
+            >
+              Sign in to your campus
+            </button>
             <button onClick={init}>Retry</button>
           </>
         ) : (
@@ -353,6 +408,11 @@ function App() {
         )}
       </div>
     );
+
+  const activeWorkspace =
+    ADMIN_WORKSPACES.find((w) => w.tabs.includes(adminTab)) ||
+    ADMIN_WORKSPACES[0];
+
   function ResourceCard({ c }) {
     if (c.kind === "recording")
       return (
@@ -398,7 +458,9 @@ function App() {
         onClick={() => openResource(c)}
       >
         <div className="resource-art">
-          <span className="resource-type">{kindName[c.kind]}</span>
+          <span className="resource-type">
+            {kindName[c.kind] || c.kind}
+          </span>
           <div className="art-symbol">
             {c.kind === "slides" ? (
               <Layers />
@@ -417,7 +479,11 @@ function App() {
           <h3>{c.title}</h3>
           <div className="row between">
             <span>
-              {c.kind === "lab" ? "Hands-on practice" : "Open resource"}{" "}
+              {c.kind === "lab"
+                ? "Hands-on practice"
+                : c.kind === "image"
+                  ? "View diagram"
+                  : "Open resource"}{" "}
               <ArrowUpRight size={13} />
             </span>
             {done.has(c.id) && <CheckCircle2 size={17} className="green" />}
@@ -426,6 +492,7 @@ function App() {
       </button>
     );
   }
+
   function SessionCard({ s }) {
     const live =
       Date.now() >= new Date(s.starts_at).getTime() &&
@@ -446,9 +513,11 @@ function App() {
           <Badge tone={live ? "green" : ""}>
             {s.session_status === "cancelled"
               ? "Cancelled"
-              : live
-                ? "Happening now"
-                : s.topic}
+              : s.session_status === "completed"
+                ? "Completed"
+                : live
+                  ? "Happening now"
+                  : s.topic}
           </Badge>
           <h3>{s.title}</h3>
           <p>
@@ -500,6 +569,7 @@ function App() {
       </div>
     );
   }
+
   function TestCards({ list = tests }) {
     return (
       <div className="test-grid">
@@ -574,11 +644,13 @@ function App() {
       </div>
     );
   }
+
   async function viewResult(id) {
     await act(async () =>
       setModal({ type: "result", result: await api("results/" + id) }),
     );
   }
+
   function Report() {
     const body = [
       `Arks Global Asia Institutes — Completion Report`,
@@ -601,6 +673,7 @@ function App() {
     ].join("\n");
     download("arks-completion-report.txt", body);
   }
+
   function Overview() {
     const next = trackable.find((c) => !done.has(c.id));
     return (
@@ -851,7 +924,7 @@ function App() {
         <div className="section-heading">
           <div>
             <h2>Pick up something new</h2>
-            <p>Your notes, guides and class materials, together.</p>
+            <p>Your notes, presentations, diagrams and guides, together.</p>
           </div>
           <button className="text-btn" onClick={() => navigate("resources")}>
             Browse library <ArrowRight size={15} />
@@ -859,7 +932,9 @@ function App() {
         </div>
         <div className="resource-grid">
           {data.content
-            .filter((c) => ["notes", "slides", "guide"].includes(c.kind))
+            .filter((c) =>
+              ["notes", "slides", "guide", "image"].includes(c.kind),
+            )
             .slice(0, 3)
             .map((c) => (
               <ResourceCard key={c.id} c={c} />
@@ -872,9 +947,10 @@ function App() {
       </>
     );
   }
+
   function Resources({ kind }) {
     const [filter, setFilter] = useState("all");
-    const kinds = kind ? [kind] : ["notes", "slides", "guide"];
+    const kinds = kind ? [kind] : ["notes", "slides", "guide", "image"];
     const items = data.content.filter(
       (c) =>
         kinds.includes(c.kind) &&
@@ -899,7 +975,7 @@ function App() {
               ? "Turn concepts into practical skills. Submit your work and get feedback."
               : kind === "recording"
                 ? "Revisit a concept, catch up on a class, or learn at your own pace."
-                : "Class notes, presentations and practical guides for every step."
+                : "Class notes, presentations, resource creation guides and architecture diagrams."
           }
         />
         <div className="filter-bar">
@@ -932,7 +1008,7 @@ function App() {
             }
             body={
               kind === "recording"
-                ? "Your administrator can add a recording link after each live session."
+                ? "Your instructor can add a recording link after each live session."
                 : "Published course materials will appear here."
             }
           />
@@ -940,6 +1016,7 @@ function App() {
       </>
     );
   }
+
   function PageHeading({ title, subtitle, action }) {
     return (
       <div className="page-heading">
@@ -954,6 +1031,7 @@ function App() {
       </div>
     );
   }
+
   function Progress() {
     return (
       <>
@@ -1025,6 +1103,7 @@ function App() {
       </>
     );
   }
+
   function Fees() {
     const paid = data.payments.reduce((s, p) => s + p.amount, 0),
       total = data.enrollment?.fee || 0;
@@ -1090,7 +1169,9 @@ function App() {
       </>
     );
   }
+
   function Tickets() {
+    const [replyBody, setReplyBody] = useState({});
     return (
       <>
         <PageHeading
@@ -1104,24 +1185,82 @@ function App() {
         />
         <SupportLinks batch={batch} />
         {data.tickets.length ? (
-          data.tickets.map((t) => (
-            <section className="panel ticket-card" key={t.id}>
-              <div className="row between">
-                <Badge tone={t.status === "resolved" ? "green" : "amber"}>
-                  {t.status}
-                </Badge>
-                <small>{date(t.created)}</small>
-              </div>
-              <h2>{t.subject}</h2>
-              <p className="prewrap">{t.body}</p>
-              {t.reply && (
-                <div className="reply">
-                  <b>From your support team</b>
-                  <p className="prewrap">{t.reply}</p>
+          data.tickets.map((t) => {
+            let thread = [];
+            try {
+              thread = JSON.parse(t.messages || "[]");
+            } catch {}
+            return (
+              <section className="panel ticket-card" key={t.id}>
+                <div className="row between">
+                  <div className="row gap">
+                    <Badge tone={t.status === "resolved" ? "green" : "amber"}>
+                      {t.status}
+                    </Badge>
+                    {t.category && <Badge tone="blue">{t.category}</Badge>}
+                  </div>
+                  <small>{date(t.created)}</small>
                 </div>
-              )}
-            </section>
-          ))
+                <h2>{t.subject}</h2>
+                {thread.length > 0 ? (
+                  <div className="ticket-thread">
+                    {thread.map((m) => (
+                      <div
+                        key={m.id || m.created}
+                        className={
+                          isStaffRole(m.role) ? "reply" : "ticket-message"
+                        }
+                      >
+                        <b>
+                          {isStaffRole(m.role)
+                            ? `${m.author_name || "Instructor"} (${m.role})`
+                            : m.author_name || "You"}{" "}
+                          · <small>{date(m.created)}</small>
+                        </b>
+                        <p className="prewrap">{m.body}</p>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <>
+                    <p className="prewrap">{t.body}</p>
+                    {t.reply && (
+                      <div className="reply">
+                        <b>From your support team</b>
+                        <p className="prewrap">{t.reply}</p>
+                      </div>
+                    )}
+                  </>
+                )}
+                <form
+                  className="row gap"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    const msg = (replyBody[t.id] || "").trim();
+                    if (!msg) return;
+                    act(async () => {
+                      await api("tickets", {
+                        ticket_id: t.id,
+                        body: msg,
+                      });
+                      setReplyBody({ ...replyBody, [t.id]: "" });
+                    }, "Follow-up message sent.");
+                  }}
+                >
+                  <input
+                    value={replyBody[t.id] || ""}
+                    onChange={(e) =>
+                      setReplyBody({ ...replyBody, [t.id]: e.target.value })
+                    }
+                    placeholder="Add a follow-up message…"
+                  />
+                  <Button secondary type="submit" disabled={busy}>
+                    Reply
+                  </Button>
+                </form>
+              </section>
+            );
+          })
         ) : (
           <Empty
             title="A little help goes a long way"
@@ -1136,6 +1275,7 @@ function App() {
       </>
     );
   }
+
   function Content() {
     if (adminMode) return <Admin />;
     if (!batchId)
@@ -1212,21 +1352,20 @@ function App() {
             )}
           </>
         );
-      case "results":
-        return <Performance batchId={batchId} viewResult={viewResult} />;
       case "tests":
         return (
           <>
             <PageHeading
               title="Small checks. Lasting knowledge."
-              subtitle="Daily, weekly and completed-topic assessments based on your approved classes."
+              subtitle="Daily (9:00 AM IST Mon–Sat), Sunday Weekly and Monthly assessments based on your approved classes."
             />
             <div className="info-strip">
               <ClipboardCheck size={20} />
               <span>
                 Each test is worth 100 marks. You have one attempt; resume it
-                before the timer expires. Review your answers and download your
-                result afterwards.
+                before the timer expires. Review your DeepSeek diagnostic
+                strengths, areas for improvement, and official docs links
+                afterwards.
               </span>
             </div>
             <Assessments
@@ -1306,14 +1445,13 @@ function App() {
               ))}
           </>
         );
-      case "docs":
-        return <Docs />;
       default:
         return <Overview />;
     }
   }
 
   function Admin() {
+    const [reportTestId, setReportTestId] = useState("all");
     if (!adminData)
       return (
         <div className="loading">
@@ -1321,25 +1459,39 @@ function App() {
         </div>
       );
     const a = adminData;
-    const tabs = [
+    const isHeadAdmin = boot.user.role === "admin";
+    const allTabs = [
       ["overview", "Overview"],
       ["automation", "Automation"],
+      ["batches", "Batches"],
       ["settings", "Batch experience"],
       ["schedule", "Session planner"],
-      ["engine", "Assessment studio"],
-      ["access", "Access & admins"],
-      ["batches", "Batches"],
-      ["invitations", "Onboarding"],
       ["content", "Content & sessions"],
+      ["engine", "Assessment studio"],
       ["tests", "Assessments"],
+      ["reports", "Results & grading"],
       ["submissions", "Lab reviews"],
-      ["tickets", "Queries"],
-      ["payments", "Fees"],
       ["users", "People"],
-      ["courses", "Courses"],
-      ["reports", "Reports"],
+      ["invitations", "Onboarding"],
+      ["access", "Access & admins"],
+      ...(isHeadAdmin ? [["payments", "Fees"], ["courses", "Courses"]] : []),
+      ["tickets", "Queries"],
       ["audit", "Activity"],
     ];
+    const workspaceTabs = allTabs.filter(([id]) =>
+      activeWorkspace.tabs.includes(id),
+    );
+    const quickTabs = [
+      ...workspaceTabs,
+      ...allTabs.filter(
+        ([id]) =>
+          !activeWorkspace.tabs.includes(id) &&
+          ["overview", "automation", "batches", "engine", "reports"].includes(
+            id,
+          ),
+      ),
+    ];
+
     const labels = {
       batches: "Manage your batches",
       invitations: "Welcome your next cohort",
@@ -1349,10 +1501,11 @@ function App() {
       tickets: "Conversations that matter",
       payments: "Keep fees transparent",
       users: "Your learning community",
-      courses: "Courses & SOPs",
-      reports: "See the bigger picture",
+      courses: "Build a reusable curriculum",
+      reports: "Assessment Results, Diagnostics & Grading Center",
       audit: "Campus activity",
     };
+
     function name(id) {
       return a.users.find((u) => u.id === id)?.name || id;
     }
@@ -1365,8 +1518,15 @@ function App() {
     function edit(entity, item) {
       setModal({ type: "editor", entity, item });
     }
+    function removeEntity(entity, itemId, labelText) {
+      act(
+        () => api("admin/delete", { entity, id: itemId }),
+        `Deleted ${labelText || entity}.`,
+      );
+    }
+
     function csv() {
-      const data = a.enrollments.map((e) => {
+      const rowsData = a.enrollments.map((e) => {
         const b = a.batches.find((b) => b.id === e.batch_id),
           c = a.courses.find((c) => c.id === b?.course_id);
         const resources = a.content.filter(
@@ -1374,7 +1534,9 @@ function App() {
             c.course_id === b?.course_id &&
             (!c.batch_id || c.batch_id === b.id) &&
             c.published &&
-            ["notes", "slides", "guide", "recording", "lab"].includes(c.kind),
+            ["notes", "slides", "guide", "recording", "lab", "image"].includes(
+              c.kind,
+            ),
         );
         const ids = new Set(resources.map((c) => c.id));
         const count = a.completions.filter(
@@ -1420,32 +1582,42 @@ function App() {
             "Completed",
             "Completion %",
           ],
-          ...data,
+          ...rowsData,
         ]
           .map((r) => r.map(escape).join(","))
           .join("\r\n"),
         "text/csv",
       );
     }
+
+    const AdminSubNav = () => (
+      <div className="admin-tabs">
+        {quickTabs.map(([id, label]) => (
+          <button
+            key={id}
+            className={adminTab === id ? "active" : ""}
+            onClick={() => setAdminTab(id)}
+          >
+            {label}
+            {id === "submissions" &&
+              a.submissions.some((s) => s.status === "submitted") && (
+                <span className="small-dot" />
+              )}
+          </button>
+        ))}
+      </div>
+    );
+
     if (["settings", "schedule", "engine", "access"].includes(adminTab))
       return (
         <>
-          <div className="admin-tabs">
-            {tabs.map(([id, label]) => (
-              <button
-                key={id}
-                className={adminTab === id ? "active" : ""}
-                onClick={() => setAdminTab(id)}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
+          <AdminSubNav />
           <AdminTools
             key={adminTab}
             tab={adminTab}
             data={a}
             batchId={batchId}
+            user={boot.user}
             refresh={async () => {
               await init();
               await refresh();
@@ -1454,47 +1626,31 @@ function App() {
           />
         </>
       );
+
     if (adminTab === "automation")
       return (
         <>
-          <div className="admin-tabs">
-            {tabs.map(([id, label]) => (
-              <button
-                key={id}
-                className={adminTab === id ? "active" : ""}
-                onClick={() => setAdminTab(id)}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-          <AutomationPanel batches={a.batches} />
+          <AdminSubNav />
+          <AutomationPanel
+            batches={a.batches}
+            onPublished={async () => {
+              await refresh();
+            }}
+          />
         </>
       );
+
     const create = [
-      "courses",
+      ...(isHeadAdmin ? ["courses"] : []),
       "batches",
       "invitations",
       "content",
       "tests",
     ].includes(adminTab);
+
     return (
       <>
-        <div className="admin-tabs">
-          {tabs.map(([id, label]) => (
-            <button
-              className={adminTab === id ? "active" : ""}
-              key={id}
-              onClick={() => setAdminTab(id)}
-            >
-              {label}
-              {id === "submissions" &&
-                a.submissions.some((s) => s.status === "submitted") && (
-                  <span className="small-dot" />
-                )}
-            </button>
-          ))}
-        </div>
+        <AdminSubNav />
         <PageHeading
           title={
             adminTab === "overview"
@@ -1503,7 +1659,7 @@ function App() {
           }
           subtitle={
             adminTab === "overview"
-              ? "Your students, classes and operations — thoughtfully connected."
+              ? "Your students, classes, Drive Sync Up and 9:00 AM IST assessments — thoughtfully connected."
               : "Manage your campus with changes saved across devices."
           }
           action={
@@ -1518,9 +1674,9 @@ function App() {
                       ? "Create assessment"
                       : adminTab === "batches"
                         ? "Create batch"
-                        : "+ Add course"}
+                        : "Create course"}
               </Button>
-            ) : adminTab === "payments" ? (
+            ) : adminTab === "payments" && isHeadAdmin ? (
               <Button onClick={() => setModal({ type: "payment" })}>
                 <Plus size={16} /> Record payment
               </Button>
@@ -1536,10 +1692,15 @@ function App() {
             <div className="info-strip">
               <Layers size={20} />
               <span>
-                <b>Your campus is ready to grow.</b> The starter batch contains
-                editable sample curriculum and links to your Drive materials.
-                Add a batch, enroll students by email and publish your class
-                schedule.
+                <b>
+                  {isHeadAdmin
+                    ? "Head / Administrator Command Center"
+                    : "Trainer / Instructor Workspace"}
+                  .
+                </b>{" "}
+                Use the 6 workspaces on the left to sync Google Drive folders,
+                approve daily materials in one click, manage 9:00 AM IST daily
+                & Sunday weekly assessments, and mentor your cohorts.
               </span>
             </div>
             <div className="stats admin-stats">
@@ -1569,25 +1730,31 @@ function App() {
             </div>
             <div className="two-col">
               <section className="panel">
-                <h2>Start your next batch</h2>
+                <h2>Daily Teaching & Operations Workflow</h2>
                 {[
                   [
                     "01",
-                    "Create a batch",
-                    "Reuse a course and choose a schedule.",
-                    "batches",
+                    "Drive Sync Up & 1-Click Day Approval",
+                    "Sync class notes, PPTs, images, guides and recordings from Drive.",
+                    "automation",
                   ],
                   [
                     "02",
-                    "Onboard your students",
-                    "Add their sign-in emails and agreed fees.",
-                    "invitations",
+                    "9:00 AM IST Daily & Sunday Weekly Tests",
+                    "Manage 20+ question daily tests and 25+ question Sunday weekly tests.",
+                    "engine",
                   ],
                   [
                     "03",
-                    "Make learning happen",
-                    "Publish sessions, resources and assessments.",
-                    "content",
+                    "Results, Diagnostics & Retakes",
+                    "Inspect DeepSeek student reports, override grades, or grant retakes.",
+                    "reports",
+                  ],
+                  [
+                    "04",
+                    "Onboard Students (Single or Bulk CSV)",
+                    "Invite students by email or bulk CSV upload.",
+                    "access",
                   ],
                 ].map(([num, title, body, tab]) => (
                   <button
@@ -1605,75 +1772,207 @@ function App() {
                 ))}
               </section>
               <section className="panel">
-                <h2>Batch directory</h2>
+                <h2>Batch directory & topic release</h2>
                 {a.batches.map((b) => (
-                  <button
-                    className="result-row"
-                    key={b.id}
-                    onClick={() => edit("batches", b)}
-                  >
-                    <div>
+                  <div className="result-row" key={b.id}>
+                    <div onClick={() => edit("batches", b)}>
                       <h3>{b.name}</h3>
                       <p>
-                        {a.courses.find((c) => c.id === b.course_id)?.title}
+                        {a.courses.find((c) => c.id === b.course_id)?.title} ·{" "}
+                        <b>Topic {b.covered} covered</b>
                       </p>
                     </div>
-                    <Badge tone={b.status === "active" ? "green" : ""}>
-                      {b.status}
-                    </Badge>
-                  </button>
+                    <div className="row gap">
+                      <button
+                        className="text-btn"
+                        title="Advance covered topic"
+                        onClick={() =>
+                          act(
+                            () =>
+                              api("admin/save", {
+                                entity: "batches",
+                                values: { ...b, covered: b.covered + 1 },
+                              }),
+                            `Advanced ${b.name} to Topic ${b.covered + 1}.`,
+                          )
+                        }
+                      >
+                        +1 Topic
+                      </button>
+                      <Badge tone={b.status === "active" ? "green" : ""}>
+                        {b.status}
+                      </Badge>
+                    </div>
+                  </div>
                 ))}
               </section>
             </div>
           </>
         ) : adminTab === "reports" ? (
-          <section className="panel">
-            <h2>Enrollment & completion export</h2>
-            <p>
-              Download one row per enrollment with course currency, agreed fees,
-              payments, balance and completion. All amounts are exported in
-              major currency units.
-            </p>
-            <Button secondary onClick={csv}>
-              <Download size={16} /> Download enrollment report
-            </Button>
-            <h3 className="spaced">Assessment overview</h3>
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Student</th>
-                    <th>Test</th>
-                    <th>Batch</th>
-                    <th>Result</th>
-                    <th>Date</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {a.attempts
-                    .filter((t) => t.submitted)
-                    .map((t) => (
-                      <tr key={t.id}>
-                        <td>{name(t.user_id)}</td>
-                        <td>
-                          {a.tests.find((x) => x.id === t.test_id)?.title}
-                        </td>
-                        <td>{batchName(t.batch_id)}</td>
-                        <td>
-                          <button
-                            className="text-btn"
-                            onClick={() => viewResult(t.id)}
-                          >
-                            {t.score}/{t.total} ↗
-                          </button>
-                        </td>
-                        <td>{date(t.submitted)}</td>
+          (() => {
+            const submittedAttempts = a.attempts.filter(
+              (t) =>
+                t.submitted &&
+                (reportTestId === "all" || t.test_id === reportTestId),
+            );
+            const avgScore = submittedAttempts.length
+              ? Math.round(
+                  submittedAttempts.reduce(
+                    (s, x) => s + (x.score / (x.total || 100)) * 100,
+                    0,
+                  ) / submittedAttempts.length,
+                )
+              : 0;
+            const passCount = submittedAttempts.filter(
+              (x) => (x.score / (x.total || 100)) * 100 >= 70,
+            ).length;
+            const selectedTest = a.tests.find((x) => x.id === reportTestId);
+            const attempterIds = new Set(
+              submittedAttempts.map((x) => x.user_id),
+            );
+            const nonAttempters = selectedTest
+              ? a.enrollments
+                  .filter(
+                    (e) =>
+                      (!selectedTest.batch_id ||
+                        e.batch_id === selectedTest.batch_id) &&
+                      !attempterIds.has(e.user_id),
+                  )
+                  .map((e) => a.users.find((u) => u.id === e.user_id))
+                  .filter(Boolean)
+              : [];
+            return (
+              <section className="panel">
+                <div className="row between wrap gap">
+                  <div>
+                    <h2>Assessment Analytics, Diagnostics & Grading</h2>
+                    <p>
+                      Inspect DeepSeek diagnostic reports, override written/code
+                      marks, or grant a 1-click retake.
+                    </p>
+                  </div>
+                  <label>
+                    Filter by Assessment
+                    <select
+                      value={reportTestId}
+                      onChange={(e) => setReportTestId(e.target.value)}
+                    >
+                      <option value="all">All assessments</option>
+                      {a.tests.map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.title} ({t.kind})
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+                <div className="stats admin-stats">
+                  <div className="stat">
+                    <span>Submitted attempts</span>
+                    <b>{submittedAttempts.length}</b>
+                  </div>
+                  <div className="stat">
+                    <span>Cohort average</span>
+                    <b>{submittedAttempts.length ? `${avgScore}%` : "—"}</b>
+                  </div>
+                  <div className="stat">
+                    <span>Pass rate (≥70%)</span>
+                    <b>
+                      {submittedAttempts.length
+                        ? `${Math.round((passCount / submittedAttempts.length) * 100)}%`
+                        : "—"}
+                    </b>
+                  </div>
+                  <div className="stat">
+                    <span>Yet to attempt</span>
+                    <b>{selectedTest ? nonAttempters.length : "Select test"}</b>
+                  </div>
+                </div>
+                {selectedTest && nonAttempters.length > 0 && (
+                  <div className="info-strip">
+                    <span>
+                      <b>Not yet attempted ({nonAttempters.length}):</b>{" "}
+                      {nonAttempters
+                        .map((u) => `${u.name} (${u.email})`)
+                        .join(", ")}
+                    </span>
+                  </div>
+                )}
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Student</th>
+                        <th>Assessment</th>
+                        <th>Batch</th>
+                        <th>Score & Status</th>
+                        <th>Submitted</th>
+                        <th>Actions</th>
                       </tr>
-                    ))}
-                </tbody>
-              </table>
-            </div>
-          </section>
+                    </thead>
+                    <tbody>
+                      {submittedAttempts.map((t) => (
+                        <tr key={t.id}>
+                          <td>
+                            <b>{name(t.user_id)}</b>
+                          </td>
+                          <td>
+                            {a.tests.find((x) => x.id === t.test_id)?.title}
+                          </td>
+                          <td>{batchName(t.batch_id)}</td>
+                          <td>
+                            <button
+                              className="text-btn"
+                              onClick={() => viewResult(t.id)}
+                            >
+                              {t.score}/{t.total} ({t.grading_status || "complete"}) ↗
+                            </button>
+                          </td>
+                          <td>{date(t.submitted)}</td>
+                          <td>
+                            <div className="row gap wrap">
+                              <button
+                                className="text-btn"
+                                onClick={() => viewResult(t.id)}
+                              >
+                                Diagnostic report
+                              </button>
+                              <button
+                                className="text-btn"
+                                onClick={() =>
+                                  setModal({
+                                    type: "grade_override",
+                                    item: t,
+                                  })
+                                }
+                              >
+                                Override grade
+                              </button>
+                              <button
+                                className="text-btn"
+                                onClick={() =>
+                                  act(
+                                    () =>
+                                      api("admin/attempt-action", {
+                                        attempt_id: t.id,
+                                        mode: "reset",
+                                      }),
+                                    "Retake granted. The student can now start a fresh attempt.",
+                                  )
+                                }
+                              >
+                                Grant retake
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            );
+          })()
         ) : (
           <section className="panel table-panel">
             {(a[adminTab] || []).length ? (
@@ -1720,6 +2019,7 @@ function App() {
                                       ? [
                                           "Student",
                                           "Subject",
+                                          "Category",
                                           "Status",
                                           "Created",
                                           "",
@@ -1731,6 +2031,7 @@ function App() {
                                             "Amount",
                                             "Reference",
                                             "Date",
+                                            "",
                                           ]
                                         : ["Actor", "Action", "Record", "Date"]
                       ).map((h, i) => (
@@ -1762,12 +2063,22 @@ function App() {
                               <Badge tone="green">{v.status}</Badge>
                             </td>
                             <td>
-                              <button
-                                className="text-btn"
-                                onClick={() => edit("batches", v)}
-                              >
-                                Edit
-                              </button>
+                              <div className="row gap">
+                                <button
+                                  className="text-btn"
+                                  onClick={() => edit("batches", v)}
+                                >
+                                  Edit
+                                </button>
+                                <button
+                                  className="text-btn"
+                                  onClick={() =>
+                                    removeEntity("batches", v.id, v.name)
+                                  }
+                                >
+                                  Delete
+                                </button>
+                              </div>
                             </td>
                           </>
                         ) : adminTab === "courses" ? (
@@ -1778,25 +2089,29 @@ function App() {
                             <td>{money(v.fee, v.currency)}</td>
                             <td>{v.currency}</td>
                             <td>
-                              <button
-                                className="text-btn"
-                                onClick={() => edit("courses", v)}
-                              >
-                                Edit
-                              </button>
+                              <div className="row gap">
+                                <button
+                                  className="text-btn"
+                                  onClick={() => edit("courses", v)}
+                                >
+                                  Edit
+                                </button>
+                                {isHeadAdmin && (
+                                  <button
+                                    className="text-btn"
+                                    onClick={() =>
+                                      removeEntity("courses", v.id, v.title)
+                                    }
+                                  >
+                                    Delete
+                                  </button>
+                                )}
+                              </div>
                             </td>
                           </>
                         ) : adminTab === "invitations" ? (
                           <>
-                            <td>
-                              {v.email}
-                              <small className="enrollment-label">
-                                {a.enrollments
-                                  .filter((e) => e.user_id === v.id)
-                                  .map((e) => batchName(e.batch_id))
-                                  .join(" · ") || "No batch assigned"}
-                              </small>
-                            </td>
+                            <td>{v.email}</td>
                             <td>{batchName(v.batch_id)}</td>
                             <td>{v.role}</td>
                             <td>
@@ -1811,12 +2126,22 @@ function App() {
                               )}
                             </td>
                             <td>
-                              <button
-                                className="text-btn"
-                                onClick={() => edit("invitations", v)}
-                              >
-                                Edit
-                              </button>
+                              <div className="row gap">
+                                <button
+                                  className="text-btn"
+                                  onClick={() => edit("invitations", v)}
+                                >
+                                  Edit
+                                </button>
+                                <button
+                                  className="text-btn"
+                                  onClick={() =>
+                                    removeEntity("invitations", v.id, v.email)
+                                  }
+                                >
+                                  Delete
+                                </button>
+                              </div>
                             </td>
                           </>
                         ) : adminTab === "content" ? (
@@ -1824,7 +2149,7 @@ function App() {
                             <td>
                               <b>{v.title}</b>
                             </td>
-                            <td>{kindName[v.kind]}</td>
+                            <td>{kindName[v.kind] || v.kind}</td>
                             <td>
                               {v.topic_order}. {v.topic}
                             </td>
@@ -1839,12 +2164,22 @@ function App() {
                               </Badge>
                             </td>
                             <td>
-                              <button
-                                className="text-btn"
-                                onClick={() => edit("content", v)}
-                              >
-                                Edit
-                              </button>
+                              <div className="row gap">
+                                <button
+                                  className="text-btn"
+                                  onClick={() => edit("content", v)}
+                                >
+                                  Edit
+                                </button>
+                                <button
+                                  className="text-btn"
+                                  onClick={() =>
+                                    removeEntity("content", v.id, v.title)
+                                  }
+                                >
+                                  Delete
+                                </button>
+                              </div>
                             </td>
                           </>
                         ) : adminTab === "tests" ? (
@@ -1861,47 +2196,72 @@ function App() {
                               </Badge>
                             </td>
                             <td>
-                              <button
-                                className="text-btn"
-                                onClick={() => edit("tests", v)}
-                              >
-                                Edit
-                              </button>
+                              <div className="row gap">
+                                <button
+                                  className="text-btn"
+                                  onClick={() => edit("tests", v)}
+                                >
+                                  Edit
+                                </button>
+                                <button
+                                  className="text-btn"
+                                  onClick={() =>
+                                    removeEntity("tests", v.id, v.title)
+                                  }
+                                >
+                                  Delete
+                                </button>
+                              </div>
                             </td>
                           </>
                         ) : adminTab === "users" ? (
                           <>
                             <td>
-                              <b>{v.name}</b>
+                              <button
+                                className="text-btn"
+                                onClick={() =>
+                                  setModal({ type: "student360", item: v })
+                                }
+                              >
+                                <b>{v.name}</b> ↗
+                              </button>
                             </td>
                             <td>{v.email}</td>
                             <td>
-                              <Badge tone={v.role === "admin" ? "blue" : ""}>
+                              <Badge
+                                tone={
+                                  v.role === "admin"
+                                    ? "blue"
+                                    : v.role === "trainer"
+                                      ? "purple"
+                                      : ""
+                                }
+                              >
                                 {v.role}
                               </Badge>
                             </td>
                             <td>{date(v.created)}</td>
                             <td>
-                              {v.role === "student" && (
-                                <button
-                                  className="button secondary"
-                                  onClick={() =>
-                                    setModal({ type: "assign-batch", item: v })
-                                  }
-                                >
-                                  Add to batch
-                                </button>
-                              )}
-                              {v.id !== boot.user.id && (
+                              <div className="row gap">
                                 <button
                                   className="text-btn"
                                   onClick={() =>
-                                    setModal({ type: "role", item: v })
+                                    setModal({ type: "student360", item: v })
                                   }
                                 >
-                                  Change role
+                                  360° profile
                                 </button>
-                              )}
+                                {isHeadAdmin && v.id !== boot.user.id && (
+                                  <button
+                                    className="text-btn"
+                                    onClick={() =>
+                                      setModal({ type: "role", item: v })
+                                    }
+                                  >
+                                    Change role
+                                  </button>
+                                )}
+                              </div>
                             </td>
                           </>
                         ) : adminTab === "submissions" ? (
@@ -1936,6 +2296,11 @@ function App() {
                             <td>{name(v.user_id)}</td>
                             <td>
                               <b>{v.subject}</b>
+                            </td>
+                            <td>
+                              <Badge tone="blue">
+                                {v.category || "academic"}
+                              </Badge>
                             </td>
                             <td>
                               <Badge
@@ -1981,6 +2346,22 @@ function App() {
                                 </td>
                                 <td>{v.reference}</td>
                                 <td>{date(v.paid_at)}</td>
+                                <td>
+                                  {isHeadAdmin && (
+                                    <button
+                                      className="text-btn"
+                                      onClick={() =>
+                                        removeEntity(
+                                          "payments",
+                                          v.id,
+                                          v.reference,
+                                        )
+                                      }
+                                    >
+                                      Void
+                                    </button>
+                                  )}
+                                </td>
                               </>
                             );
                           })()
@@ -2019,755 +2400,801 @@ function App() {
             )}
           </section>
         )}
-        {adminTab === "invitations" && (
-          <section className="info-strip">
-            Students get their dedicated course through their batch.{" "}
-            <button className="text-btn" onClick={() => setAdminTab("users")}>
-              Assign existing students
-            </button>
-            <button className="text-btn" onClick={() => edit("courses", null)}>
-              + Add course & SOP
-            </button>
-            <button className="text-btn" onClick={() => edit("batches", null)}>
-              + Create batch
-            </button>
-          </section>
-        )}
-        {adminTab === "invitations" && (
-          <div className="info-strip">
-            <MessageCircle size={19} />
-            <span>
-              Share your campus link with enrolled students. Enrollment
-              activates at their next sign-in. Site access must also allow those
-              students; this private preview currently admits only its owner.
-            </span>
-          </div>
-        )}
       </>
     );
   }
-  function Docs() {
-    return (
-      <>
-        <PageHeading
-          title="Built to keep growing"
-          subtitle="Application documentation, architecture and operating guides."
-        />
-        <div className="two-col">
-          {[
-            [
-              "CAMPUS-UPGRADE.md",
-              "Campus upgrade & activation",
-              "Google login, access groups, Azure engine and mixed assessments.",
-            ],
-            [
-              "UPGRADE-ARCHITECTURE.md",
-              "Integration architecture",
-              "How the portal, Azure, Google Drive and DeepSeek connect.",
-            ],
-            [
-              "AUTOMATION-GUIDE.md",
-              "Automation guide",
-              "Connect batch folders, review imports and release learning materials.",
-            ],
-            [
-              "README.md",
-              "Start here",
-              "Application setup, capabilities and delivery notes.",
-            ],
-            [
-              "ARCHITECTURE.md",
-              "Architecture",
-              "System design, data relationships and scaling plan.",
-            ],
-            [
-              "ADMIN-GUIDE.md",
-              "Administrator guide",
-              "Run courses, batches, onboarding and operations.",
-            ],
-            [
-              "STUDENT-GUIDE.md",
-              "Student guide",
-              "Learning, submissions, assessments and Android installation.",
-            ],
-            [
-              "API.md",
-              "API reference",
-              "Endpoints, authorization and data contracts.",
-            ],
-            [
-              "OPERATIONS.md",
-              "Operations & deployment",
-              "Storage, security, recovery and release checklist.",
-            ],
-          ].map(([file, title, desc]) => (
-            <a
-              className="panel doc-card"
-              key={file}
-              href={"/docs/" + file}
-              target="_blank"
-            >
-              <FileText size={23} />
-              <h2>{title}</h2>
-              <p>{desc}</p>
-              <span>
-                Read documentation <ArrowUpRight size={15} />
-              </span>
-            </a>
-          ))}
-        </div>
-        <section className="panel">
-          <h2>One campus. Room for every batch.</h2>
-          <div className="architecture">
-            <div>
-              Web browser
-              <br />
-              <small>Desktop & tablet</small>
-            </div>
-            <div>
-              Android PWA
-              <br />
-              <small>Installable campus</small>
-            </div>
-            <span>↓</span>
-            <div className="arch-wide">
-              Entra sign-in & campus access policy
-            </div>
-            <span>↓</span>
-            <div className="arch-wide">
-              Azure managed Functions API
-              <br />
-              <small>Roles · enrollment · validation · scoring</small>
-            </div>
-            <span>↓</span>
-            <div>
-              Central PostgreSQL database
-              <br />
-              <small>Courses · batches · progress</small>
-            </div>
-            <div>
-              Private Azure Blob storage
-              <br />
-              <small>Materials · submissions</small>
-            </div>
-          </div>
-        </section>
-      </>
-    );
-  }
+
   return (
-    <DraftContext.Provider
-      value={adminMode ? boot.user.id + ":" + adminTab + ":" + batchId : ""}
-    >
-      <div className="app-shell">
-        {!onboarding && (
-          <Tour
-            key={boot.user.id + adminMode}
-            user={boot.user}
-            blocked={!!modal}
-            adminMode={adminMode}
-            onNavigate={(p) => {
-              if (adminMode) {
-                setAdminTab(p === "dashboard" ? "overview" : p);
-                navigate("admin");
-              } else navigate(p);
-            }}
-          />
-        )}
-        <div
-          className={"mobile-shade " + (mobile ? "visible" : "")}
-          onClick={() => setMobile(false)}
+    <div className="app-shell">
+      {!onboarding && (
+        <Tour
+          key={boot.user.id + adminMode}
+          user={boot.user}
+          blocked={!!modal}
+          adminMode={adminMode}
+          onNavigate={(p) => {
+            if (adminMode) {
+              setAdminTab(p === "dashboard" ? "overview" : p);
+              navigate("admin");
+            } else navigate(p);
+          }}
         />
-        <aside className={"sidebar " + (mobile ? "open" : "")}>
-          <a
-            className="brand"
-            href="#"
-            onClick={(e) => {
-              e.preventDefault();
-              setAdminMode(false);
-              navigate("dashboard");
-            }}
-          >
-            <div className="logo-window">
-              <img src="/brand.png" alt="ARKS global asia" />
-            </div>
-            <span>
-              INSTITUTES <i /> LEARNING CAMPUS
-            </span>
-          </a>
-          <div className="workspace-label">
-            {adminMode ? "ADMIN WORKSPACE" : "STUDENT WORKSPACE"}
+      )}
+      <div
+        className={"mobile-shade " + (mobile ? "visible" : "")}
+        onClick={() => setMobile(false)}
+      />
+      <aside className={"sidebar " + (mobile ? "open" : "")}>
+        <a
+          className="brand"
+          href="#"
+          onClick={(e) => {
+            e.preventDefault();
+            setAdminMode(false);
+            navigate("dashboard");
+          }}
+        >
+          <div className="logo-window">
+            <img src="/brand.png" alt="ARKS global asia" />
           </div>
-          <nav>
-            {(adminMode
-              ? [
-                  ["admin", "Administration"],
-                  ["docs", "Documentation"],
-                ]
-              : nav
-            ).map(([id, label]) => {
-              const Icon = icons[id];
-              return (
-                <button
-                  key={id}
-                  className={
-                    (
-                      adminMode
-                        ? id === (page === "docs" ? "docs" : "admin")
-                        : page === id
-                    )
-                      ? "active"
-                      : ""
-                  }
-                  onClick={() => navigate(id)}
-                >
-                  <Icon size={19} />
-                  <span>{label}</span>
-                  {id === "tests" &&
-                    tests.filter((t) => !t.locked).length > 0 && (
-                      <span className="nav-count">
-                        {tests.filter((t) => !t.locked).length}
-                      </span>
-                    )}
-                </button>
-              );
-            })}
-          </nav>
-          <div className="sidebar-bottom">
-            {!adminMode && (
-              <div className="help-card">
-                <span className="help-dot" />
-                <h3>Big goals. Small steps.</h3>
-                <p>
-                  We’re here for every part
-                  <br />
-                  of your learning journey.
-                </p>
-                <button
-                  className="text-btn"
-                  onClick={() => {
-                    setAdminMode(false);
-                    navigate("tickets");
-                  }}
-                >
-                  Let’s talk <ArrowUpRight size={14} />
-                </button>
-              </div>
-            )}
-            {boot.user.role === "admin" && (
-              <button
-                className="mode-switch"
-                onClick={() => {
-                  setAdminMode(!adminMode);
-                  setPage("dashboard");
-                }}
-              >
-                <Settings size={18} />
-                {adminMode ? "Switch to student view" : "Admin portal"}
-                <ArrowUpRight size={15} />
-              </button>
-            )}
-            <button
-              className="user-card"
-              onClick={() => setModal({ type: "profile" })}
-            >
-              <div className="avatar">
-                {boot.user.name
-                  .split(" ")
-                  .map((s) => s[0])
-                  .slice(0, 2)
-                  .join("")
-                  .toUpperCase()}
-              </div>
-              <div>
-                <strong>{boot.user.name}</strong>
-                <span>
-                  {adminMode ? "Administrator" : "My learning profile"}
-                </span>
-              </div>
-              <ChevronRight size={16} />
-            </button>
-          </div>
-        </aside>
-        <div className="main-shell">
-          <header className="topbar">
-            <div className="row gap">
-              <button
-                className="text-btn"
-                onClick={goBack}
-                aria-label="Go back"
-              >
-                ← Back
-              </button>
-              <button
-                className="icon-btn mobile-menu"
-                aria-label="Open navigation"
-                onClick={() => setMobile(true)}
-              >
-                <Menu size={21} />
-              </button>
-              <span className="breadcrumb">
-                <button
-                  className="text-btn"
-                  onClick={() => {
-                    navigate("dashboard");
-                    if (adminMode) setAdminTab("overview");
-                  }}
-                >
-                  Campus
-                </button>{" "}
-                <ChevronRight size={13} />{" "}
-                <b>
-                  {adminMode
-                    ? "Administration"
-                    : nav.find((n) => n[0] === page)?.[1] || "Documentation"}
-                </b>
-              </span>
-            </div>
-            <div className="header-right">
-              {boot.user.role === "admin" && (
-                <button
-                  className="mode-switch compact"
-                  onClick={() => {
-                    setAdminMode(!adminMode);
-                    setPage("dashboard");
-                    setModal(null);
-                  }}
-                >
-                  {adminMode ? "Student view" : "Admin portal"}
-                </button>
-              )}
-              {adminMode && (
-                <button
-                  className="text-btn"
-                  onClick={() =>
-                    window.dispatchEvent(new Event("arks-save-draft"))
-                  }
-                >
-                  Save draft
-                </button>
-              )}
-              {!adminMode && (
-                <label className="search">
-                  <Search size={17} />
-                  <input
-                    aria-label="Search your resources"
-                    value={search}
-                    onChange={(e) => setSearch(e.target.value)}
-                    placeholder="Search your campus…"
-                  />
-                  <kbd>⌕</kbd>
-                </label>
-              )}
-              <button
-                className="icon-btn notification"
-                aria-label="View campus updates"
-                onClick={() => setModal({ type: "updates" })}
-              >
-                <Bell size={19} />
-                {upcoming.length > 0 && <i />}
-              </button>
-              <span className="header-divider" />
-              <button
-                className="avatar small"
-                aria-label="Open profile"
-                onClick={() => setModal({ type: "profile" })}
-              >
-                {boot.user.name[0].toUpperCase()}
-              </button>
-            </div>
-          </header>
-          <main>
-            <div className="context-bar">
-              <div className="row gap">
-                <span className="small-dot" />
-                <span>
-                  {adminMode
-                    ? "A little care. A better learning experience."
-                    : "Let’s make today a step forward."}
-                </span>
-              </div>
-              {!adminMode && boot.batches.length > 0 && (
-                <label className="batch-select">
-                  <Layers size={15} />
-                  <select
-                    aria-label="Select batch"
-                    value={batchId}
-                    onChange={(e) => {
-                      setBatchId(e.target.value);
-                      setSearch("");
+          <span>
+            INSTITUTES <i /> LEARNING CAMPUS
+          </span>
+        </a>
+        <div className="workspace-label">
+          {adminMode
+            ? boot.user.role === "trainer"
+              ? "TRAINER WORKSPACE"
+              : "ADMIN WORKSPACE"
+            : "STUDENT WORKSPACE"}
+        </div>
+        <nav>
+          {adminMode
+            ? ADMIN_WORKSPACES.map((w) => {
+                const Icon = icons[w.id] || Settings;
+                const active = activeWorkspace.id === w.id;
+                return (
+                  <button
+                    key={w.id}
+                    className={active ? "active" : ""}
+                    onClick={() => {
+                      setAdminTab(w.defaultTab);
+                      setMobile(false);
                     }}
                   >
-                    {boot.batches.map((b) => (
-                      <option key={b.id} value={b.id}>
-                        {b.name}
-                      </option>
-                    ))}
-                  </select>
-                  <ChevronDown size={14} />
-                </label>
-              )}
-            </div>
-            {error && (
-              <div className="error-banner" role="alert">
-                {error}{" "}
-                <button
-                  onClick={() => {
-                    setError("");
-                    refresh();
-                  }}
-                >
-                  Retry
-                </button>
-              </div>
-            )}
-            {page === "docs" ? <Docs /> : <Content />}
-            <footer>
-              <span>
-                © {new Date().getFullYear()} Arks Global Asia Institutes
-              </span>
-              <div>
-                <button onClick={() => navigate("docs")}>
-                  Campus documentation
-                </button>
-                <button
-                  onClick={async () => {
-                    await api("auth/logout", {});
-                    setBoot(null);
-                    setLoginRequired(true);
-                  }}
-                >
-                  Sign out
-                </button>
-                <span>Trust starts here.</span>
-              </div>
-            </footer>
-          </main>
-        </div>
-        {notice && (
-          <div className="toast" role="status">
-            <CheckCircle2 size={18} />
-            {notice}
+                    <Icon size={19} />
+                    <span>{w.label}</span>
+                  </button>
+                );
+              })
+            : nav.map(([id, label]) => {
+                const Icon = icons[id];
+                return (
+                  <button
+                    key={id}
+                    className={page === id ? "active" : ""}
+                    onClick={() => navigate(id)}
+                  >
+                    <Icon size={19} />
+                    <span>{label}</span>
+                    {id === "tests" &&
+                      tests.filter((t) => !t.locked).length > 0 && (
+                        <span className="nav-count">
+                          {tests.filter((t) => !t.locked).length}
+                        </span>
+                      )}
+                  </button>
+                );
+              })}
+        </nav>
+        <div className="sidebar-bottom">
+          <div className="help-card">
+            <span className="help-dot" />
+            <h3>Big goals. Small steps.</h3>
+            <p>
+              We’re here for every part
+              <br />
+              of your learning journey.
+            </p>
             <button
-              aria-label="Dismiss notification"
-              onClick={() => setNotice("")}
+              className="text-btn"
+              onClick={() => {
+                setAdminMode(false);
+                navigate("tickets");
+              }}
             >
-              <X size={15} />
+              Let’s talk <ArrowUpRight size={14} />
             </button>
           </div>
-        )}
-        {(modal || onboarding) && (
-          <Modal
-            title={
-              onboarding
-                ? "Your next chapter starts here"
-                : modal?.type === "resource"
-                  ? modal.item.title
-                  : modal?.type === "editor"
-                    ? (modal.item ? "Edit " : "Create ") +
-                      {
-                        invitations: "enrollment",
-                        content: "resource",
-                        tests: "assessment",
-                        batches: "batch",
-                        courses: "course",
-                      }[modal.entity]
-                    : modal?.type === "quiz"
-                      ? modal.test.title
-                      : {
-                          ticket: "How can we help?",
-                          profile: "Your campus profile",
-                          result: "A little feedback goes a long way",
-                          payment: "Record a payment",
-                          review: "Review lab submission",
-                          reply: "Reply to a query",
-                          role: "Change account role",
-                          updates: "Your campus updates",
-                        }[modal?.type] || "Campus"
-            }
-            close={() => {
-              if (onboarding) setOnboarding(false);
-              else if (modal?.type === "quiz") setModal(null);
-              else setModal(null);
-            }}
+          {isStaffRole(boot.user.role) && (
+            <button
+              className="mode-switch"
+              onClick={() => {
+                setAdminMode(!adminMode);
+                setPage("dashboard");
+              }}
+            >
+              <Settings size={18} />
+              {adminMode ? "Switch to student view" : "Admin portal"}
+              <ArrowUpRight size={15} />
+            </button>
+          )}
+          <button
+            className="user-card"
+            onClick={() => setModal({ type: "profile" })}
           >
-            {onboarding || modal?.type === "profile" ? (
-              <ProfileForm
-                user={boot.user}
-                onboarding={onboarding}
-                save={async (values) => {
-                  if (
-                    await act(
-                      () => api("profile", values),
-                      "Profile saved. You’re ready to learn.",
-                    )
-                  ) {
-                    setOnboarding(false);
-                    setModal(null);
-                    await init();
-                  }
+            <div className="avatar">
+              {boot.user.name
+                .split(" ")
+                .map((s) => s[0])
+                .slice(0, 2)
+                .join("")
+                .toUpperCase()}
+            </div>
+            <div>
+              <strong>{boot.user.name}</strong>
+              <span>
+                {adminMode
+                  ? boot.user.role === "trainer"
+                    ? "Trainer / Instructor"
+                    : "Head / Administrator"
+                  : "My learning profile"}
+              </span>
+            </div>
+            <ChevronRight size={16} />
+          </button>
+        </div>
+      </aside>
+      <div className="main-shell">
+        <header className="topbar">
+          <div className="row gap">
+            <button
+              className="icon-btn mobile-menu"
+              aria-label="Open navigation"
+              onClick={() => setMobile(true)}
+            >
+              <Menu size={21} />
+            </button>
+            <span className="breadcrumb">
+              <button
+                className="text-btn"
+                onClick={() => {
+                  navigate("dashboard");
+                  if (adminMode) setAdminTab("overview");
                 }}
-              />
-            ) : modal.type === "resource" ? (
-              <ResourceDetail
-                item={modal.item}
-                complete={done.has(modal.item.id)}
-                submissions={data.submissions.filter(
-                  (s) => s.content_id === modal.item.id,
-                )}
-                busy={busy}
-                mark={() =>
-                  act(
+              >
+                Campus
+              </button>{" "}
+              <ChevronRight size={13} />{" "}
+              <b>
+                {adminMode
+                  ? activeWorkspace.label
+                  : nav.find((n) => n[0] === page)?.[1] || "Overview"}
+              </b>
+            </span>
+          </div>
+          <div className="header-right">
+            {!adminMode && (
+              <label className="search">
+                <Search size={17} />
+                <input
+                  aria-label="Search your resources"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search your campus…"
+                />
+                <kbd>⌕</kbd>
+              </label>
+            )}
+            <button
+              className="icon-btn notification"
+              aria-label="View campus updates"
+              onClick={() => setModal({ type: "updates" })}
+            >
+              <Bell size={19} />
+              {upcoming.length > 0 && <i />}
+            </button>
+            <span className="header-divider" />
+            <button
+              className="avatar small"
+              aria-label="Open profile"
+              onClick={() => setModal({ type: "profile" })}
+            >
+              {boot.user.name[0].toUpperCase()}
+            </button>
+          </div>
+        </header>
+        <main>
+          <div className="context-bar">
+            <div className="row gap">
+              <span className="small-dot" />
+              <span>
+                {adminMode
+                  ? "A little care. A better learning experience."
+                  : "Let’s make today a step forward."}
+              </span>
+            </div>
+            {boot.batches.length > 0 && (
+              <label className="batch-select">
+                <Layers size={15} />
+                <select
+                  aria-label="Select batch"
+                  value={batchId}
+                  onChange={(e) => {
+                    setBatchId(e.target.value);
+                    setSearch("");
+                  }}
+                >
+                  {boot.batches.map((b) => (
+                    <option key={b.id} value={b.id}>
+                      {b.name}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown size={14} />
+              </label>
+            )}
+          </div>
+          {error && (
+            <div className="error-banner" role="alert">
+              {error}{" "}
+              <button
+                onClick={() => {
+                  setError("");
+                  refresh();
+                }}
+              >
+                Retry
+              </button>
+            </div>
+          )}
+          <Content />
+          <footer>
+            <span>
+              © {new Date().getFullYear()} Arks Global Asia Institutes
+            </span>
+            <div>
+              <button
+                onClick={async () => {
+                  await api("auth/logout", {});
+                  setBoot(null);
+                  setLoginRequired(true);
+                }}
+              >
+                Sign out
+              </button>
+              <span>Trust starts here.</span>
+            </div>
+          </footer>
+        </main>
+      </div>
+      {notice && (
+        <div className="toast" role="status">
+          <CheckCircle2 size={18} />
+          {notice}
+          <button
+            aria-label="Dismiss notification"
+            onClick={() => setNotice("")}
+          >
+            <X size={15} />
+          </button>
+        </div>
+      )}
+      {(modal || onboarding) && (
+        <Modal
+          title={
+            onboarding
+              ? "Your next chapter starts here"
+              : modal?.type === "resource"
+                ? modal.item.title
+                : modal?.type === "editor"
+                  ? (modal.item ? "Edit " : "Create ") +
+                    {
+                      invitations: "enrollment",
+                      content: "resource",
+                      tests: "assessment",
+                      batches: "batch",
+                      courses: "course",
+                    }[modal.entity]
+                  : modal?.type === "quiz"
+                    ? modal.test.title
+                    : modal?.type === "student360"
+                      ? `Student 360° Profile — ${modal.item.name}`
+                      : modal?.type === "grade_override"
+                        ? "Manual Grade & Feedback Override"
+                        : {
+                            ticket: "How can we help?",
+                            profile: "Your campus profile",
+                            result: "A little feedback goes a long way",
+                            payment: "Record a payment",
+                            review: "Review lab submission",
+                            reply: "Reply to a query",
+                            role: "Change account role",
+                            updates: "Your campus updates",
+                          }[modal?.type] || "Campus"
+          }
+          close={() => {
+            if (onboarding) setOnboarding(false);
+            else setModal(null);
+          }}
+        >
+          {onboarding || modal?.type === "profile" ? (
+            <ProfileForm
+              user={boot.user}
+              onboarding={onboarding}
+              onLogout={async () => {
+                await api("auth/logout", {});
+                setModal(null);
+                setBoot(null);
+                setLoginRequired(true);
+              }}
+              save={async (values) => {
+                if (
+                  await act(
+                    () => api("profile", values),
+                    "Profile saved. You’re ready to learn.",
+                  )
+                ) {
+                  setOnboarding(false);
+                  setModal(null);
+                  await init();
+                }
+              }}
+            />
+          ) : modal.type === "resource" ? (
+            <ResourceDetail
+              item={modal.item}
+              complete={done.has(modal.item.id)}
+              submissions={data.submissions.filter(
+                (s) => s.content_id === modal.item.id,
+              )}
+              busy={busy}
+              mark={() =>
+                act(
+                  () =>
+                    api("complete", {
+                      content_id: modal.item.id,
+                      batch_id: batchId,
+                      complete: !done.has(modal.item.id),
+                    }),
+                  "Progress updated",
+                )
+              }
+              submit={async (values) => {
+                if (
+                  await act(
                     () =>
-                      api("complete", {
+                      api("submissions", {
+                        ...values,
                         content_id: modal.item.id,
                         batch_id: batchId,
-                        complete: !done.has(modal.item.id),
                       }),
-                    "Progress updated",
+                    "Lab submitted for review.",
                   )
+                )
+                  setModal(null);
+              }}
+            />
+          ) : modal.type === "ticket" ? (
+            <SimpleForm
+              initial={{ category: "academic" }}
+              fields={[
+                [
+                  "category",
+                  "Category",
+                  "select",
+                  ["academic", "lab", "assessment", "fees", "technical"],
+                ],
+                ["subject", "Subject", "text"],
+                ["body", "Tell us a little more", "textarea"],
+              ]}
+              save={async (values) => {
+                if (
+                  await act(
+                    () => api("tickets", { ...values, batch_id: batchId }),
+                    "Your query has been sent to the team.",
+                  )
+                )
+                  setModal(null);
+              }}
+              label="Send query"
+            />
+          ) : modal.type === "quiz" ? (
+            <Quiz
+              test={modal.test}
+              finish={async (answers) => {
+                setBusy(true);
+                try {
+                  const r = await api("tests/submit", {
+                    attempt_id: modal.test.id,
+                    answers,
+                  });
+                  setModal({ type: "result", result: r });
+                  await refresh();
+                } catch (e) {
+                  toast(e.message);
+                } finally {
+                  setBusy(false);
                 }
-                submit={async (values) => {
-                  if (
-                    await act(
-                      () =>
-                        api("submissions", {
-                          ...values,
-                          content_id: modal.item.id,
-                          batch_id: batchId,
-                        }),
-                      "Lab submitted for review.",
-                    )
+              }}
+              busy={busy}
+            />
+          ) : modal.type === "result" ? (
+            <Result
+              result={modal.result}
+              onRefresh={() => viewResult(modal.result.id)}
+            />
+          ) : modal.type === "editor" ? (
+            <Editor
+              entity={modal.entity}
+              item={modal.item}
+              data={adminData}
+              user={boot.user}
+              save={async (values) => {
+                if (
+                  await act(
+                    () => api("admin/save", { entity: modal.entity, values }),
+                    "Changes saved.",
                   )
-                    setModal(null);
-                }}
-              />
-            ) : modal.type === "ticket" ? (
-              <SimpleForm
-                fields={[
-                  ["subject", "Subject", "text"],
-                  ["body", "Tell us a little more", "textarea"],
-                ]}
-                save={async (values) => {
-                  if (
-                    await act(
-                      () => api("tickets", { ...values, batch_id: batchId }),
-                      "Your query has been sent to the team.",
-                    )
+                ) {
+                  setModal(null);
+                  await init();
+                }
+              }}
+            />
+          ) : modal.type === "payment" ? (
+            <PaymentForm
+              data={adminData}
+              save={async (values) => {
+                if (
+                  await act(
+                    () => api("admin/payment", values),
+                    "Payment recorded.",
                   )
-                    setModal(null);
-                }}
-                label="Send query"
-              />
-            ) : modal.type === "quiz" ? (
-              <Quiz
-                test={modal.test}
-                finish={async (answers) => {
-                  setBusy(true);
-                  try {
-                    const r = await api("tests/submit", {
-                      attempt_id: modal.test.id,
-                      answers,
-                    });
-                    setModal({ type: "result", result: r });
-                    await refresh();
-                  } catch (e) {
-                    toast(e.message);
-                  } finally {
-                    setBusy(false);
-                  }
-                }}
-                busy={busy}
-              />
-            ) : modal.type === "result" ? (
-              <Result
-                result={modal.result}
-                onRefresh={() => viewResult(modal.result.id)}
-              />
-            ) : modal.type === "editor" ? (
-              <Editor
-                entity={modal.entity}
-                item={modal.item}
-                data={adminData}
-                save={async (values) => {
-                  if (
-                    await act(
-                      () => api("admin/save", { entity: modal.entity, values }),
-                      "Changes saved.",
-                    )
-                  ) {
-                    setModal(null);
-                    await init();
-                    return true;
-                  }
-                  return false;
-                }}
-              />
-            ) : modal.type === "assign-batch" ? (
-              <AssignBatch
-                student={modal.item}
-                data={adminData}
-                save={async (values) => {
-                  if (
-                    await act(
-                      () =>
-                        api("admin/enroll-student", {
-                          ...values,
-                          user_id: modal.item.id,
-                        }),
-                      "Batch assigned.",
-                    )
-                  ) {
-                    setModal(null);
-                    await init();
-                  }
-                }}
-              />
-            ) : modal.type === "payment" ? (
-              <PaymentForm
-                data={adminData}
-                save={async (values) => {
-                  if (
-                    await act(
-                      () => api("admin/payment", values),
-                      "Payment recorded.",
-                    )
-                  )
-                    setModal(null);
-                }}
-              />
-            ) : modal.type === "review" ? (
-              <>
-                <p className="prewrap">{modal.item.body}</p>
-                {modal.item.file_id && (
+                )
+                  setModal(null);
+              }}
+            />
+          ) : modal.type === "review" ? (
+            <>
+              <p className="prewrap">{modal.item.body}</p>
+              {modal.item.file_id && (
+                <div className="row gap wrap">
+                  <a
+                    className="button secondary"
+                    href={"/api/files/" + modal.item.file_id + "?inline=1"}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Preview submission ↗
+                  </a>
                   <a
                     className="button secondary"
                     href={"/api/files/" + modal.item.file_id}
                   >
                     <Download size={15} /> Download submission
                   </a>
-                )}
-                <SimpleForm
-                  initial={modal.item}
-                  fields={[
-                    [
-                      "status",
-                      "Review status",
-                      "select",
-                      ["submitted", "accepted", "revision_requested"],
-                    ],
-                    ["feedback", "Feedback for the student", "textarea"],
-                  ]}
-                  save={async (values) => {
-                    if (
-                      await act(
-                        () =>
-                          api("admin/review", { ...values, id: modal.item.id }),
-                        "Review saved.",
-                      )
+                </div>
+              )}
+              <SimpleForm
+                initial={modal.item}
+                fields={[
+                  [
+                    "status",
+                    "Review status",
+                    "select",
+                    ["submitted", "accepted", "revision_requested"],
+                  ],
+                  ["feedback", "Feedback for the student", "textarea"],
+                ]}
+                save={async (values) => {
+                  if (
+                    await act(
+                      () =>
+                        api("admin/review", { ...values, id: modal.item.id }),
+                      "Review saved.",
                     )
-                      setModal(null);
-                  }}
-                  label="Save review"
-                />
-              </>
-            ) : modal.type === "reply" ? (
-              <>
-                <h3>{modal.item.subject}</h3>
-                <p className="prewrap">{modal.item.body}</p>
-                <SimpleForm
-                  initial={modal.item}
-                  fields={[
-                    ["reply", "Your reply", "textarea"],
-                    ["status", "Status", "select", ["open", "resolved"]],
-                  ]}
-                  save={async (values) => {
-                    if (
-                      await act(
-                        () =>
-                          api("admin/reply", { ...values, id: modal.item.id }),
-                        "Reply saved.",
-                      )
-                    )
-                      setModal(null);
-                  }}
-                  label="Send reply"
-                />
-              </>
-            ) : modal.type === "role" ? (
-              <>
-                <p>
-                  Update permissions for <b>{modal.item.name}</b>.
-                  Administrators can manage all students, content and fee
-                  records.
-                </p>
-                <SimpleForm
-                  initial={modal.item}
-                  fields={[
-                    ["role", "Account role", "select", ["student", "admin"]],
-                  ]}
-                  save={async (values) => {
-                    if (
-                      await act(
-                        () =>
-                          api("admin/role", {
-                            id: modal.item.id,
-                            role: values.role,
-                          }),
-                        "Role updated.",
-                      )
-                    )
-                      setModal(null);
-                  }}
-                  label="Update role"
-                />
-              </>
-            ) : modal.type === "updates" ? (
-              <>
-                <p>Your next classes and latest feedback, in one place.</p>
-                {upcoming.length ? (
-                  upcoming.slice(0, 5).map((s) => (
-                    <div className="result-row" key={s.id}>
-                      <div>
-                        <h3>{s.title}</h3>
-                        <p>{date(s.starts_at)}</p>
+                  )
+                    setModal(null);
+                }}
+                label="Save review"
+              />
+            </>
+          ) : modal.type === "reply" ? (
+            <>
+              <div className="row gap">
+                <Badge tone="blue">{modal.item.category || "academic"}</Badge>
+                <Badge tone={modal.item.status === "resolved" ? "green" : "amber"}>
+                  {modal.item.status}
+                </Badge>
+              </div>
+              <h3>{modal.item.subject}</h3>
+              {(() => {
+                let thread = [];
+                try {
+                  thread = JSON.parse(modal.item.messages || "[]");
+                } catch {}
+                return thread.length ? (
+                  <div className="ticket-thread">
+                    {thread.map((m) => (
+                      <div
+                        key={m.id || m.created}
+                        className={
+                          isStaffRole(m.role) ? "reply" : "ticket-message"
+                        }
+                      >
+                        <b>
+                          {m.author_name || m.role} ({m.role}) ·{" "}
+                          <small>{date(m.created)}</small>
+                        </b>
+                        <p className="prewrap">{m.body}</p>
                       </div>
-                      <Video size={18} />
-                    </div>
-                  ))
+                    ))}
+                  </div>
                 ) : (
-                  <p>No upcoming sessions have been scheduled.</p>
-                )}
-                {data?.submissions
-                  .filter((s) => s.feedback)
-                  .map((s) => (
-                    <div className="reply" key={s.id}>
-                      <b>Lab feedback</b>
-                      <p>{s.feedback}</p>
+                  <p className="prewrap">{modal.item.body}</p>
+                );
+              })()}
+              <SimpleForm
+                initial={{ reply: "", status: modal.item.status }}
+                fields={[
+                  ["reply", "Your reply", "textarea"],
+                  ["status", "Status", "select", ["open", "resolved"]],
+                ]}
+                save={async (values) => {
+                  if (
+                    await act(
+                      () =>
+                        api("admin/reply", { ...values, id: modal.item.id }),
+                      "Reply saved.",
+                    )
+                  )
+                    setModal(null);
+                }}
+                label="Send reply"
+              />
+            </>
+          ) : modal.type === "role" ? (
+            <>
+              <p>
+                Update permissions for <b>{modal.item.name}</b>.{" "}
+                <b>Head / Admin</b> manages everything including courses, team
+                roles, and fees; <b>Trainer / Instructor</b> manages batches,
+                Drive Sync Up, content approvals, live sessions, assessments,
+                labs, and queries.
+              </p>
+              <SimpleForm
+                initial={modal.item}
+                fields={[
+                  [
+                    "role",
+                    "Account role",
+                    "select",
+                    ["student", "trainer", "admin"],
+                  ],
+                ]}
+                save={async (values) => {
+                  if (
+                    await act(
+                      () =>
+                        api("admin/role", {
+                          id: modal.item.id,
+                          role: values.role,
+                        }),
+                      "Role updated.",
+                    )
+                  )
+                    setModal(null);
+                }}
+                label="Update role"
+              />
+            </>
+          ) : modal.type === "grade_override" ? (
+            <SimpleForm
+              initial={{ score: modal.item.score ?? 0 }}
+              fields={[["score", "Override score (0 to 100)", "number"]]}
+              save={async (values) => {
+                if (
+                  await act(
+                    () =>
+                      api("admin/attempt-action", {
+                        attempt_id: modal.item.id,
+                        mode: "grade",
+                        score: Number(values.score),
+                      }),
+                    "Assessment score updated.",
+                  )
+                )
+                  setModal(null);
+              }}
+              label="Save overridden score"
+            />
+          ) : modal.type === "student360" ? (
+            <Student360
+              student={modal.item}
+              data={adminData}
+              isHeadAdmin={boot.user.role === "admin"}
+              onInspectResult={(attemptId) => viewResult(attemptId)}
+              onGrantRetake={(attemptId) =>
+                act(
+                  () =>
+                    api("admin/attempt-action", {
+                      attempt_id: attemptId,
+                      mode: "reset",
+                    }),
+                  "Retake granted.",
+                )
+              }
+            />
+          ) : modal.type === "updates" ? (
+            <>
+              <p>Your next classes and latest feedback, in one place.</p>
+              {upcoming.length ? (
+                upcoming.slice(0, 5).map((s) => (
+                  <div className="result-row" key={s.id}>
+                    <div>
+                      <h3>{s.title}</h3>
+                      <p>{date(s.starts_at)}</p>
                     </div>
-                  ))}
-                <Button
-                  secondary
-                  onClick={async () => {
-                    if (install) {
-                      await install.prompt();
-                      setInstall(null);
-                    } else
-                      toast(
-                        "On Android, open this site in Chrome and choose ⋮ → Add to Home screen → Install.",
-                      );
-                  }}
-                >
-                  Install campus on your phone <Download size={15} />
-                </Button>
-              </>
-            ) : null}
-          </Modal>
-        )}
-      </div>
-    </DraftContext.Provider>
+                    <Video size={18} />
+                  </div>
+                ))
+              ) : (
+                <p>No upcoming sessions have been scheduled.</p>
+              )}
+              {data?.submissions
+                .filter((s) => s.feedback)
+                .map((s) => (
+                  <div className="reply" key={s.id}>
+                    <b>Lab feedback</b>
+                    <p>{s.feedback}</p>
+                  </div>
+                ))}
+              <Button
+                secondary
+                onClick={async () => {
+                  if (install) {
+                    await install.prompt();
+                    setInstall(null);
+                  } else
+                    toast(
+                      "On Android, open this site in Chrome and choose ⋮ → Add to Home screen → Install.",
+                    );
+                }}
+              >
+                Install campus on your phone <Download size={15} />
+              </Button>
+            </>
+          ) : null}
+        </Modal>
+      )}
+    </div>
   );
 }
+
+function Student360({
+  student,
+  data,
+  isHeadAdmin,
+  onInspectResult,
+  onGrantRetake,
+}) {
+  const enrollments = data.enrollments.filter((e) => e.user_id === student.id);
+  const attempts = data.attempts.filter(
+    (a) => a.user_id === student.id && a.submitted,
+  );
+  const submissions = data.submissions.filter((s) => s.user_id === student.id);
+  const tickets = data.tickets.filter((t) => t.user_id === student.id);
+  return (
+    <div className="student-360">
+      <div className="row between wrap">
+        <div>
+          <h3>{student.name}</h3>
+          <p>
+            {student.email} · {student.phone || "No phone"} · Joined{" "}
+            {date(student.created)}
+          </p>
+        </div>
+        <Badge tone="blue">{student.role}</Badge>
+      </div>
+      {student.goal && (
+        <div className="info-strip">
+          <span>
+            <b>Learning goal:</b> {student.goal}
+          </span>
+        </div>
+      )}
+      <h4>Enrolled Batches ({enrollments.length})</h4>
+      {enrollments.map((e) => {
+        const b = data.batches.find((x) => x.id === e.batch_id);
+        const paid = data.payments
+          .filter((p) => p.enrollment_id === e.id)
+          .reduce((s, p) => s + p.amount, 0);
+        const doneCount = data.completions.filter(
+          (c) => c.user_id === student.id && c.batch_id === e.batch_id,
+        ).length;
+        return (
+          <div className="result-row" key={e.id}>
+            <div>
+              <b>{b?.name || e.batch_id}</b>
+              <p>
+                {doneCount} resources completed
+                {isHeadAdmin
+                  ? ` · Fee: ${money(paid)} paid of ${money(e.fee)}`
+                  : ""}
+              </p>
+            </div>
+            <Badge tone="green">{b?.status || "enrolled"}</Badge>
+          </div>
+        );
+      })}
+      <h4>Assessment Attempts ({attempts.length})</h4>
+      {attempts.length ? (
+        attempts.map((a) => (
+          <div className="result-row" key={a.id}>
+            <div>
+              <b>
+                {data.tests.find((t) => t.id === a.test_id)?.title || a.test_id}
+              </b>
+              <p>
+                Score: {a.score}/{a.total} · {date(a.submitted)}
+              </p>
+            </div>
+            <div className="row gap">
+              <button
+                className="text-btn"
+                onClick={() => onInspectResult(a.id)}
+              >
+                Diagnostic report ↗
+              </button>
+              <button className="text-btn" onClick={() => onGrantRetake(a.id)}>
+                Grant retake
+              </button>
+            </div>
+          </div>
+        ))
+      ) : (
+        <p className="muted">No submitted assessments yet.</p>
+      )}
+      <h4>Lab Submissions ({submissions.length})</h4>
+      {submissions.length ? (
+        submissions.map((s) => (
+          <div className="result-row" key={s.id}>
+            <div>
+              <b>
+                {data.content.find((c) => c.id === s.content_id)?.title ||
+                  "Lab"}
+              </b>
+              <p>{date(s.created)}</p>
+            </div>
+            <Badge tone={s.status === "accepted" ? "green" : "amber"}>
+              {s.status}
+            </Badge>
+          </div>
+        ))
+      ) : (
+        <p className="muted">No lab submissions yet.</p>
+      )}
+      <h4>Support Queries ({tickets.length})</h4>
+      {tickets.length ? (
+        tickets.map((t) => (
+          <div className="result-row" key={t.id}>
+            <div>
+              <b>{t.subject}</b>
+              <p>{t.category || "academic"}</p>
+            </div>
+            <Badge tone={t.status === "resolved" ? "green" : "amber"}>
+              {t.status}
+            </Badge>
+          </div>
+        ))
+      ) : (
+        <p className="muted">No queries submitted.</p>
+      )}
+    </div>
+  );
+}
+
 function Modal({ title, close, children }) {
   const ref = useRef();
   useEffect(() => {
@@ -2832,6 +3259,7 @@ function Modal({ title, close, children }) {
     </div>
   );
 }
+
 function SimpleForm({
   fields,
   initial = {},
@@ -2855,7 +3283,7 @@ function SimpleForm({
     }
   }
   return (
-    <DraftForm className="form" onSubmit={submit}>
+    <form className="form" onSubmit={submit}>
       {children}
       {fields.map(([key, label, type, opts, help]) => (
         <label key={key}>
@@ -2907,10 +3335,11 @@ function SimpleForm({
         {saving ? <LoaderCircle size={16} className="spin" /> : null}
         {saving ? "Saving…" : label}
       </Button>
-    </DraftForm>
+    </form>
   );
 }
-function ProfileForm({ user, save, onboarding }) {
+
+function ProfileForm({ user, save, onboarding, onLogout }) {
   return (
     <>
       <p>
@@ -2928,16 +3357,13 @@ function ProfileForm({ user, save, onboarding }) {
         save={save}
         label={onboarding ? "Let’s get started" : "Save profile"}
       />
-      <a
-        className="signout"
-        href="/signout-with-chatgpt?return_to=%2F"
-        target="_top"
-      >
+      <button type="button" className="signout text-btn" onClick={onLogout}>
         <LogOut size={15} /> Sign out
-      </a>
+      </button>
     </>
   );
 }
+
 function FileUpload({ accept, onUploaded }) {
   const [name, setName] = useState(""),
     [busy, setBusy] = useState(false),
@@ -2947,14 +3373,14 @@ function FileUpload({ accept, onUploaded }) {
       <label className="upload-zone">
         <Upload size={22} />
         <strong>{busy ? "Uploading…" : name || "Add a file"}</strong>
-        <span>PDF, images, text, ZIP, Office · Up to 20 MB</span>
+        <span>PDF, images, YAML/scripts, text, ZIP, Office · Up to 20 MB</span>
         <input
           aria-label="Upload file"
           disabled={busy}
           type="file"
           accept={
             accept ||
-            ".pdf,.png,.jpg,.jpeg,.webp,.txt,.md,.zip,.docx,.pptx,.xlsx,.csv"
+            ".pdf,.png,.jpg,.jpeg,.webp,.svg,.txt,.md,.yaml,.yml,.sh,.py,.json,.zip,.docx,.pptx,.xlsx,.csv"
           }
           onChange={async (e) => {
             const f = e.target.files[0];
@@ -2981,6 +3407,7 @@ function FileUpload({ accept, onUploaded }) {
     </div>
   );
 }
+
 function ResourceDetail({
   item: c,
   complete,
@@ -2995,11 +3422,24 @@ function ResourceDetail({
   return (
     <>
       <div className="row gap">
-        <Badge tone="blue">{kindName[c.kind]}</Badge>
+        <Badge tone="blue">{kindName[c.kind] || c.kind}</Badge>
         <span className="muted">
           Topic {c.topic_order} · {c.topic}
         </span>
       </div>
+      {c.kind === "image" && c.file_id && (
+        <div className="diagram-preview">
+          <img
+            src={"/api/files/" + c.file_id + "?inline=1"}
+            alt={c.title}
+            style={{
+              maxWidth: "100%",
+              borderRadius: "12px",
+              marginTop: "12px",
+            }}
+          />
+        </div>
+      )}
       <p className="prewrap resource-text">
         {c.body || "Your instructor has shared this resource with your class."}
       </p>
@@ -3029,7 +3469,9 @@ function ResourceDetail({
             <Download size={16} /> Download attachment
           </a>
         )}
-        {["notes", "slides", "recording", "guide"].includes(c.kind) && (
+        {["notes", "slides", "recording", "guide", "image"].includes(
+          c.kind,
+        ) && (
           <Button secondary disabled={busy} onClick={mark}>
             {complete ? <CheckCircle2 size={17} /> : <Check size={17} />}{" "}
             {complete ? "Completed · undo" : "Mark as complete"}
@@ -3044,7 +3486,7 @@ function ResourceDetail({
             Share your approach, commands and repository link. Your instructor
             will review your submission.
           </p>
-          <DraftForm
+          <form
             className="form"
             onSubmit={async (e) => {
               e.preventDefault();
@@ -3070,7 +3512,7 @@ function ResourceDetail({
             <Button disabled={saving} type="submit">
               {saving ? "Submitting…" : "Submit lab"} <ArrowRight size={16} />
             </Button>
-          </DraftForm>
+          </form>
           {submissions.length > 0 && (
             <>
               <h3 className="spaced">Your submissions</h3>
@@ -3112,6 +3554,7 @@ function ResourceDetail({
     </>
   );
 }
+
 function Quiz({ test, finish, busy }) {
   const key = "arks-attempt-" + test.id;
   const [answers, setAnswers] = useState(() => {
@@ -3157,11 +3600,15 @@ function Quiz({ test, finish, busy }) {
     return () => clearTimeout(timer);
   }, [answers, busy]);
   const q = test.questions[index];
+  const answeredCount = test.questions.filter((_, i) =>
+    isAnswered(answers[i]),
+  ).length;
   return (
     <div className="quiz">
       <div className="row between">
         <Badge tone="blue">
-          Question {index + 1} of {test.questions.length}
+          Question {index + 1} of {test.questions.length} ({answeredCount}{" "}
+          answered)
         </Badge>
         <span className={"timer " + (remaining < 60 ? "danger" : "")}>
           <Clock size={16} />
@@ -3173,6 +3620,30 @@ function Quiz({ test, finish, busy }) {
           style={{ width: ((index + 1) / test.questions.length) * 100 + "%" }}
         />
       </div>
+      {test.questions.length > 1 && (
+        <div
+          className="question-palette"
+          aria-label="Question navigator palette"
+        >
+          {test.questions.map((_, i) => (
+            <button
+              key={i}
+              type="button"
+              className={
+                "palette-pill " +
+                (i === index
+                  ? "current"
+                  : isAnswered(answers[i])
+                    ? "answered"
+                    : "")
+              }
+              onClick={() => setIndex(i)}
+            >
+              {i + 1}
+            </button>
+          ))}
+        </div>
+      )}
       <small role="status">{saveStatus}</small>
       <h3>{q.prompt}</h3>
       <p>
@@ -3214,7 +3685,9 @@ function Quiz({ test, finish, busy }) {
     </div>
   );
 }
+
 function Result({ result: r, onRefresh }) {
+  const summary = r.summary || {};
   return (
     <div className="result">
       <div className="result-summary">
@@ -3236,7 +3709,7 @@ function Result({ result: r, onRefresh }) {
           {r.grading_status !== "complete" && r.questions.some(written)
             ? "(provisional; written answers awaiting grading)"
             : ""}{" "}
-          · Review your answers below.
+          · Review your diagnostic coaching report and answers below.
         </p>
         {r.id && (
           <a className="button secondary" href={"/api/result-pdf/" + r.id}>
@@ -3258,6 +3731,70 @@ function Result({ result: r, onRefresh }) {
           </p>
         )}
       </div>
+
+      {(summary.strengths?.length > 0 ||
+        summary.improvements?.length > 0 ||
+        summary.recommendations?.length > 0) && (
+        <div className="diagnostic-coach">
+          <div className="two-col">
+            {summary.strengths?.length > 0 && (
+              <section className="panel">
+                <Badge tone="green">KEY STRENGTHS</Badge>
+                <ul className="diagnostic-list">
+                  {summary.strengths.map((s, idx) => (
+                    <li key={idx}>{s}</li>
+                  ))}
+                </ul>
+              </section>
+            )}
+            {summary.improvements?.length > 0 && (
+              <section className="panel">
+                <Badge tone="amber">AREAS FOR IMPROVEMENT</Badge>
+                <ul className="diagnostic-list">
+                  {summary.improvements.map((s, idx) => (
+                    <li key={idx}>{s}</li>
+                  ))}
+                </ul>
+              </section>
+            )}
+          </div>
+          {summary.recommendations?.length > 0 && (
+            <section className="panel">
+              <Badge tone="blue">
+                RECOMMENDED OFFICIAL DOCS, NOTES & VIDEO REFERENCES
+              </Badge>
+              <div className="recommendations-grid">
+                {summary.recommendations.map((rec, idx) => (
+                  <div className="recommendation-card" key={idx}>
+                    <div className="row between">
+                      <b>{rec.title}</b>
+                      <Badge>
+                        {rec.category === "official_doc"
+                          ? "Official Docs"
+                          : rec.category === "video"
+                            ? "Video / Replay"
+                            : "Class Notes"}
+                      </Badge>
+                    </div>
+                    {rec.description && <p>{rec.description}</p>}
+                    {rec.url && (
+                      <a
+                        href={rec.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-btn"
+                      >
+                        Open reference <ExternalLink size={13} />
+                      </a>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+        </div>
+      )}
+
       {r.questions.map((q, i) => (
         <div className="answer-review" key={i}>
           <div className="row gap">
@@ -3296,7 +3833,9 @@ function Result({ result: r, onRefresh }) {
     </div>
   );
 }
-function Editor({ entity, item, data, save }) {
+
+function Editor({ entity, item, data, user, save }) {
+  const isHeadAdmin = !user || user.role === "admin";
   const defaults = {
     courses: {
       title: "",
@@ -3343,7 +3882,7 @@ function Editor({ entity, item, data, save }) {
       title: "",
       kind: "daily",
       topic_order: 1,
-      duration: 10,
+      duration: 30,
       published: 1,
       questions: JSON.stringify(
         [
@@ -3359,23 +3898,20 @@ function Editor({ entity, item, data, save }) {
       ),
     },
   };
-  const [v, setV, clearEditorDraft] = useDraftState(
-      "editor:" + entity + ":" + (item?.id || "new"),
-      () => {
-        const val = { ...defaults[entity], ...item };
-        if (entity === "batches")
-          val.drive_folder =
-            data.automation_sources?.find((s) => s.batch_id === item?.id)
-              ?.folder_input || "";
-        if (val.fee !== undefined) val.fee = val.fee / 100;
-        if (val.starts_at) val.starts_at = val.starts_at.slice(0, 16);
-        if (val.questions)
-          val.questions = JSON.stringify(JSON.parse(val.questions), null, 2);
-        if (val.syllabus)
-          val.syllabus = JSON.stringify(JSON.parse(val.syllabus), null, 2);
-        return val;
-      },
-    ),
+  const [v, setV] = useState(() => {
+      const val = { ...defaults[entity], ...item };
+      if (entity === "batches")
+        val.drive_folder =
+          data.automation_sources?.find((s) => s.batch_id === item?.id)
+            ?.folder_input || "";
+      if (val.fee !== undefined) val.fee = val.fee / 100;
+      if (val.starts_at) val.starts_at = val.starts_at.slice(0, 16);
+      if (val.questions)
+        val.questions = JSON.stringify(JSON.parse(val.questions), null, 2);
+      if (val.syllabus)
+        val.syllabus = JSON.stringify(JSON.parse(val.syllabus), null, 2);
+      return val;
+    }),
     [saving, setSaving] = useState(false);
   const courseOpts = data.courses.map((c) => [c.id, c.title]),
     batchOpts = data.batches
@@ -3433,25 +3969,19 @@ function Editor({ entity, item, data, save }) {
     </label>
   );
   return (
-    <DraftForm
-      draftKey={"editor:" + entity + ":" + (item?.id || "new")}
+    <form
       className="form"
       onSubmit={async (e) => {
         e.preventDefault();
         setSaving(true);
         try {
-          const applied = await save({
+          await save({
             ...v,
             ...(v.starts_at ? { starts_at: v.starts_at + "Z" } : {}),
             ...(v.fee !== undefined
               ? { fee: Math.round(Number(v.fee) * 100) }
               : {}),
           });
-          if (applied) {
-            clearEditorDraft();
-            return true;
-          }
-          return false;
         } finally {
           setSaving(false);
         }
@@ -3461,18 +3991,6 @@ function Editor({ entity, item, data, save }) {
         <>
           {field("title", "Course title")}
           {field("description", "Description", "textarea")}
-          <label>
-            Course SOP · PDF or DOCX
-            <FileUpload
-              accept=".pdf,.docx"
-              onUploaded={(f) => setV({ ...v, sop_file_id: f.id })}
-            />
-            <small>
-              {v.sop_file_id
-                ? "SOP attached. Save the course to apply it."
-                : "Upload the course SOP; all batches of this course can use it."}
-            </small>
-          </label>
           {field("fee", "Default fee (major currency units)", "number")}
           {field(
             "currency",
@@ -3494,7 +4012,7 @@ function Editor({ entity, item, data, save }) {
             "Drive folder name or link",
             "text",
             null,
-            "Optional: connect this batch’s generated materials. Imports always require admin approval.",
+            "Optional: connect this batch’s generated materials. Imports always require trainer/admin approval.",
             true,
           )}
           {field("course_id", "Course", "select", courseOpts)}
@@ -3530,10 +4048,18 @@ function Editor({ entity, item, data, save }) {
           </div>
           {field("email", "Sign-in email", "email")}
           {field("batch_id", "Batch", "select", batchOpts)}
-          {field("role", "Role", "select", [
-            ["student", "Student"],
-            ["admin", "Administrator"],
-          ])}
+          {field(
+            "role",
+            "Role",
+            "select",
+            isHeadAdmin
+              ? [
+                  ["student", "Student"],
+                  ["trainer", "Trainer / Instructor"],
+                  ["admin", "Head / Administrator"],
+                ]
+              : [["student", "Student"]],
+          )}
           {field(
             "fee",
             "Agreed course fee (major currency units)",
@@ -3617,7 +4143,6 @@ function Editor({ entity, item, data, save }) {
             ["daily", "Daily"],
             ["weekly", "Weekly"],
             ["monthly", "Monthly"],
-            ["topic", "Completed topic"],
           ])}
           <div className="form-grid">
             {field("topic_order", "Unlock after topic", "number")}
@@ -3646,9 +4171,10 @@ function Editor({ entity, item, data, save }) {
             }[entity]}
         <Check size={16} />
       </Button>
-    </DraftForm>
+    </form>
   );
 }
+
 function PaymentForm({ data, save }) {
   const options = data.enrollments.map((e) => ({
     value: e.id,
@@ -3673,7 +4199,9 @@ function PaymentForm({ data, save }) {
     </>
   );
 }
+
 createRoot(document.getElementById("root")).render(<App />);
+
 function SyllabusBuilder({ value, onChange }) {
   const items = JSON.parse(value),
     update = (i, key, val) =>
@@ -3730,67 +4258,5 @@ function SyllabusBuilder({ value, onChange }) {
         <Plus size={15} /> Add topic
       </Button>
     </div>
-  );
-}
-
-function AssignBatch({ student, data, save }) {
-  const [batch, setBatch] = useState(data.batches[0]?.id || ""),
-    [fee, setFee] = useState(""),
-    [busy, setBusy] = useState(false);
-  const course = data.courses.find(
-    (c) => c.id === data.batches.find((b) => b.id === batch)?.course_id,
-  );
-  return (
-    <DraftForm
-      className="form"
-      onSubmit={async (e) => {
-        e.preventDefault();
-        setBusy(true);
-        try {
-          await save({
-            batch_id: batch,
-            ...(fee !== "" ? { fee: Math.round(Number(fee) * 100) } : {}),
-          });
-        } finally {
-          setBusy(false);
-        }
-      }}
-    >
-      <h3>Assign {student.name} to a course batch</h3>
-      <label>
-        Batch
-        <select
-          required
-          value={batch}
-          onChange={(e) => setBatch(e.target.value)}
-        >
-          <option value="">Choose a batch</option>
-          {data.batches.map((b) => (
-            <option key={b.id} value={b.id}>
-              {b.name}
-              {data.enrollments.some(
-                (e) => e.user_id === student.id && e.batch_id === b.id,
-              )
-                ? " · already enrolled"
-                : ""}
-            </option>
-          ))}
-        </select>
-      </label>
-      <p>Course: {course?.title || "Select a batch"}</p>
-      <label>
-        Fee in rupees · leave blank for course default
-        <input
-          type="number"
-          min="0"
-          step="0.01"
-          value={fee}
-          onChange={(e) => setFee(e.target.value)}
-        />
-      </label>
-      <button className="button" disabled={busy || !batch}>
-        Save batch assignment
-      </button>
-    </DraftForm>
   );
 }

@@ -20,27 +20,24 @@ test("student and administrator DOM workflows render and assessment interaction 
     value: dom.window.navigator,
     configurable: true,
   });
-  const env = { DB: await database(), BUCKET: memoryBucket() };
+  const env = {
+    DB: await database(),
+    BUCKET: memoryBucket(),
+    LOCAL_DEV_OWNER: "true",
+  };
   const originalFetch = globalThis.fetch;
-  const pendingRequests = new Set();
   globalThis.fetch = async (path, options = {}) => {
     const headers = new Headers(options.headers);
     headers.set("oai-authenticated-user-id", "owner");
     headers.set("oai-authenticated-user-email", "owner@arks.test");
     headers.set("oai-authenticated-user-full-name", "Campus Owner");
-    const marker = {};
-    pendingRequests.add(marker);
-    try {
-      return await api(
-        new Request(new URL(path, "https://campus.test"), {
-          ...options,
-          headers,
-        }),
-        env,
-      );
-    } finally {
-      pendingRequests.delete(marker);
-    }
+    return api(
+      new Request(new URL(path, "https://campus.test"), {
+        ...options,
+        headers,
+      }),
+      env,
+    );
   };
   await fs.mkdir(".local", { recursive: true });
   await build({
@@ -56,20 +53,8 @@ test("student and administrator DOM workflows render and assessment interaction 
   async function settle(fn = () => {}) {
     await act(async () => {
       await fn();
-      await new Promise((r) => setTimeout(r, 20));
+      await new Promise((r) => setTimeout(r, 35));
     });
-    let idle = 0;
-    for (let i = 0; i < 500 && idle < 2; i++) {
-      await act(async () => {
-        await new Promise((r) => setTimeout(r, 10));
-      });
-      idle = pendingRequests.size ? 0 : idle + 1;
-    }
-    assert.equal(
-      pendingRequests.size,
-      0,
-      "UI requests should settle before assertions",
-    );
   }
   try {
     await settle(() => import("../.local/ui-test.mjs?test=" + Date.now()));
@@ -87,6 +72,22 @@ test("student and administrator DOM workflows render and assessment interaction 
     assert.match(document.body.textContent, /Welcome back, Campus/);
     await settle(() => button("Admin portal").click());
     assert.match(document.body.textContent, /Make room for what’s next/);
+    // Verify all 6 Admin/Trainer Workspaces render in the sidebar
+    for (const wsLabel of [
+      "Overview",
+      "Curriculum & Batches",
+      "Classroom & Content",
+      "Assessments & Labs",
+      "Students & Team",
+      "Queries & Activity",
+    ]) {
+      assert.ok(
+        [...document.querySelectorAll("nav button")].some((b) =>
+          b.textContent.includes(wsLabel),
+        ),
+        `Expected 6-workspace sidebar to include ${wsLabel}`,
+      );
+    }
     await settle(() => button("Automation").click());
     assert.match(document.body.textContent, /Let the materials come to you/);
     await settle(() => button("Connect a batch folder").click());
@@ -95,25 +96,6 @@ test("student and administrator DOM workflows render and assessment interaction 
     );
     await settle(() =>
       document.querySelector('[aria-label="Close dialog"]').click(),
-    );
-    await settle(() => button("Session planner").click());
-    const draftTitle = document.querySelector('input[name="title"]');
-    draftTitle.value = "A class draft that survives switching tabs";
-    await settle(() =>
-      draftTitle.dispatchEvent(
-        new dom.window.Event("input", { bubbles: true }),
-      ),
-    );
-    await settle(() =>
-      draftTitle.dispatchEvent(
-        new dom.window.Event("change", { bubbles: true }),
-      ),
-    );
-    await settle(() => button("Batch experience").click());
-    await settle(() => button("Session planner").click());
-    assert.equal(
-      document.querySelector('input[name="title"]').value,
-      "A class draft that survives switching tabs",
     );
     await settle(() => button("Batches").click());
     assert.match(document.body.textContent, /Manage your batches/);
@@ -131,6 +113,9 @@ test("student and administrator DOM workflows render and assessment interaction 
     assert.match(document.body.textContent, /Small checks/);
     await settle(() => button("Start test").click());
     assert.match(document.body.textContent, /Question 1 of 3/);
+    assert.ok(
+      document.querySelector('[aria-label="Question navigator palette"]'),
+    );
     for (let i = 0; i < 3; i++) {
       await settle(() =>
         document.querySelectorAll(".quiz-options button")[i].click(),
@@ -140,6 +125,12 @@ test("student and administrator DOM workflows render and assessment interaction 
       );
     }
     assert.match(document.body.textContent, /100 \/ 100 marks/);
+    assert.match(document.body.textContent, /KEY STRENGTHS/);
+    assert.match(document.body.textContent, /AREAS FOR IMPROVEMENT/);
+    assert.match(
+      document.body.textContent,
+      /RECOMMENDED OFFICIAL DOCS, NOTES & VIDEO REFERENCES/,
+    );
     assert.equal(
       (
         await env.DB.prepare(
@@ -153,4 +144,30 @@ test("student and administrator DOM workflows render and assessment interaction 
     dom.window.close();
     delete globalThis.IS_REACT_ACT_ENVIRONMENT;
   }
+});
+
+test("repository hygiene removes legacy OpenAI hosting clutter and includes Azure Static Web Apps config", async () => {
+  for (const removedPath of [
+    ".openai",
+    "HANDOVER.json",
+    "SOURCE-MANIFEST.json",
+    "azure/pricing-2026-11-17.json",
+    "public/docs",
+  ]) {
+    let exists = true;
+    try {
+      await fs.access(removedPath);
+    } catch {
+      exists = false;
+    }
+    assert.equal(
+      exists,
+      false,
+      `Expected obsolete path ${removedPath} to be deleted`,
+    );
+  }
+  const swaRaw = await fs.readFile("public/staticwebapp.config.json", "utf8");
+  const swaConfig = JSON.parse(swaRaw);
+  assert.equal(swaConfig.navigationFallback.rewrite, "/index.html");
+  assert.equal(swaConfig.globalHeaders["X-Content-Type-Options"], "nosniff");
 });

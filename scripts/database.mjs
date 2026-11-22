@@ -1,14 +1,6 @@
-if (process.env.ARKS_TEST_PG_CONFIG) {
-  const { afterEach } = await import("node:test");
-  afterEach(async () => {
-    await (await import("../azure/portal/test-database.js")).cleanupPgTests();
-  });
-}
 import initSqlJs from "sql.js";
 import fs from "node:fs/promises";
 export async function database(filename) {
-  if (process.env.ARKS_TEST_PG_CONFIG)
-    return (await import("../azure/portal/test-database.js")).pgTestDatabase();
   const SQL = await initSqlJs();
   let bytes;
   try {
@@ -21,6 +13,19 @@ export async function database(filename) {
       .filter((f) => f.endsWith(".sql"))
       .sort())
       sqlite.run(await fs.readFile("drizzle/" + file, "utf8"));
+  } else {
+    const alters = [
+      "ALTER TABLE attempts ADD summary text DEFAULT '{}' NOT NULL",
+      "ALTER TABLE tickets ADD category text DEFAULT 'academic' NOT NULL",
+      "ALTER TABLE tickets ADD messages text DEFAULT '[]' NOT NULL",
+      "ALTER TABLE automation_sources ADD config text DEFAULT '{}' NOT NULL",
+      "ALTER TABLE import_items ADD class_date text DEFAULT '' NOT NULL",
+    ];
+    for (const sql of alters) {
+      try {
+        sqlite.run(sql);
+      } catch {}
+    }
   }
   let pending = Promise.resolve();
   async function persist() {

@@ -7,7 +7,6 @@ cd "$(dirname "$0")"
 SUBSCRIPTION_ID=${SUBSCRIPTION_ID:-a23b413f-dbe1-4a62-a9f9-62a6327fae00}
 GOOGLE_PROJECT_ID=${GOOGLE_PROJECT_ID:-gen-lang-client-0246520454}
 LOCATION=${LOCATION:-centralindia}
-SCAN_SCHEDULE=${SCAN_SCHEDULE:-'0 30 4,21 * * *'}
 RG=${RG:-rg-arks-drive-automation}
 az account set --subscription "$SUBSCRIPTION_ID"
 TENANT_ID=$(az account show --query tenantId -o tsv)
@@ -49,7 +48,7 @@ APP_ID=$(az functionapp show -g "$RG" -n "$APP" --query id -o tsv)
 az resource update --ids "$APP_ID" --set properties.keyVaultReferenceIdentity="$MI_ID" properties.httpsOnly=true -o none
 az functionapp config appsettings set -g "$RG" -n "$APP" --settings \
   'AzureWebJobs.dispatch_batches.Disabled=true' 'AzureWebJobs.scan_batch.Disabled=true' \
-  "SCAN_SCHEDULE=$SCAN_SCHEDULE" "AZURE_CLIENT_ID=$MI_CLIENT" \
+  'SCAN_SCHEDULE=0 */15 * * * *' "AZURE_CLIENT_ID=$MI_CLIENT" \
   "ARKS_HOST_TOKEN=@Microsoft.KeyVault(SecretUri=https://${VAULT}.vault.azure.net/secrets/arks-host-token/)" \
   "ARKS_IMPORTER_TOKEN=@Microsoft.KeyVault(SecretUri=https://${VAULT}.vault.azure.net/secrets/arks-importer-token/)" -o none
 # Azure CLI resolves the account key internally; it never appears in shell arguments.

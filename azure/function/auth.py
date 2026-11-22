@@ -1,6 +1,9 @@
 """Azure managed identity -> Google STS -> read-only Drive service account."""
 import os
-from azure.identity import ManagedIdentityCredential
+try:
+    from azure.identity import ManagedIdentityCredential
+except ImportError:
+    ManagedIdentityCredential = None
 from google.auth import identity_pool
 from google.auth.transport.requests import AuthorizedSession
 

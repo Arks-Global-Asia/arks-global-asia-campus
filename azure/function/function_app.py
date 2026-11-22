@@ -39,6 +39,21 @@ def dispatch_batches(timer: func.TimerRequest, jobs: func.Out[List[str]]):
         raise RuntimeError("Batch dispatch failed; check portal credential and connectivity.") from None
 
 
+@app.function_name(name="schedule_morning_assessments")
+@app.timer_trigger(schedule="0 30 3 * * *", arg_name="timer", run_on_startup=False, use_monitor=True)
+def schedule_morning_assessments(timer: func.TimerRequest):
+    """Fires daily at 03:30 UTC (09:00 AM IST).
+    Monday-Saturday: schedules Daily Test (20+ Qs) if class materials were taught the previous day.
+    Sunday: schedules Weekly Test (25+ Qs) aggregating Mon-Sat materials (no Daily Test on Sunday).
+    """
+    try:
+        Portal().call("schedule-assessments", {})
+        queue_engine_jobs()
+        logging.info("9:00 AM IST morning assessment schedule check completed.")
+    except Exception:
+        raise RuntimeError("Morning assessment schedule failed; check portal connectivity.") from None
+
+
 @app.function_name(name="scan_batch")
 @app.queue_trigger(arg_name="job", queue_name="arks-drive-scans", connection="AzureWebJobsStorage")
 def scan_batch(job: func.QueueMessage):
@@ -47,7 +62,6 @@ def scan_batch(job: func.QueueMessage):
         import uuid
         uuid.UUID(source_id)
         outcome = scan_source(Portal(), Drive(drive_session()), Checkpoints(), source_id)
-        queue_engine_jobs()
         logging.info("Batch scan %s: %s", source_id, outcome)
     except Exception:
         # SDK exception strings may contain request headers. Never log their chain.

@@ -1,5 +1,6 @@
-import { sourcePolicy, excludedPath, planAssessments } from "./learning.js";
 import { engineRoutes, engineFile, wakeEngine } from "./features.js";
+import { staff, istDateInfo } from "./common.js";
+
 const now = () => new Date().toISOString(),
   uuid = () => crypto.randomUUID();
 const fail = (status, message) => {
@@ -33,6 +34,73 @@ const text = (v, label, max = 500) => {
 };
 const fileId = (v) =>
   typeof v === "string" && /^[a-zA-Z0-9_-]{10,200}$/.test(v);
+
+export const STUDENT_CONTENT_KINDS = [
+  "notes",
+  "slides",
+  "lab",
+  "guide",
+  "recording",
+  "image",
+  "sop",
+  "test_link",
+];
+
+export const DEFAULT_EXCLUDED_FOLDERS = [
+  "do_not_share",
+  "trainer_only",
+  "lab_answers",
+  "student_submissions",
+];
+
+export function parseSourceConfig(raw) {
+  let parsed = {};
+  if (typeof raw === "string" && raw.trim()) {
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      parsed = {};
+    }
+  } else if (raw && typeof raw === "object") {
+    parsed = raw;
+  }
+  const excluded_folders = Array.isArray(parsed.excluded_folders)
+    ? [
+        ...new Set(
+          parsed.excluded_folders
+            .map((x) =>
+              String(x || "")
+                .trim()
+                .toLowerCase()
+                .replace(/\s+/g, "_"),
+            )
+            .filter(Boolean),
+        ),
+      ]
+    : [...DEFAULT_EXCLUDED_FOLDERS];
+  const excluded_extensions = Array.isArray(parsed.excluded_extensions)
+    ? [
+        ...new Set(
+          parsed.excluded_extensions
+            .map((x) =>
+              String(x || "")
+                .trim()
+                .toLowerCase()
+                .replace(/^\.+/, ""),
+            )
+            .filter(Boolean),
+        ),
+      ]
+    : [];
+  const auto_daily_test =
+    parsed.auto_daily_test === undefined ? true : Boolean(parsed.auto_daily_test);
+  return {
+    excluded_folders,
+    excluded_extensions,
+    auto_daily_test,
+  };
+}
+
 export function folderInput(value) {
   value = text(value, "Drive folder", 300);
   if (/^https?:/i.test(value)) {
@@ -56,10 +124,32 @@ export function folderInput(value) {
   }
   return { input: value, id: null };
 }
-export function classifyMaterial(name, path, mime) {
-  const s = (path + "/" + name).toLowerCase();
+
+export function classifyMaterial(name, path, mime = "", sourceConfig = {}) {
+  const cfg = parseSourceConfig(sourceConfig);
+  const lowerName = String(name || "").toLowerCase();
+  const lowerPath = String(path || "").toLowerCase();
+  const s = (lowerPath + "/" + lowerName).toLowerCase();
+
+  // Check per-source excluded folders
+  const segments = lowerPath
+    .split("/")
+    .map((seg) => seg.trim().replace(/\s+/g, "_"))
+    .filter(Boolean);
+  if (segments.some((seg) => cfg.excluded_folders.includes(seg))) {
+    return "private";
+  }
+
+  // Check per-source excluded extensions
   if (
-    /(^|[\s/_.-])(answers?|solutions?|rubrics?|results?|responses?|grading|instructor|trainer|keys?)([\s/_.-]|$)/.test(
+    cfg.excluded_extensions.length &&
+    cfg.excluded_extensions.some((ext) => lowerName.endsWith("." + ext))
+  ) {
+    return "private";
+  }
+
+  if (
+    /(^|[\s/_.-])(answers?|solutions?|rubrics?|results?|responses?|grading|instructor|trainer|trainer_only|do_not_share|keys?)([\s/_.-]|$)/.test(
       s,
     ) ||
     mime === "application/vnd.google-apps.spreadsheet"
@@ -79,17 +169,20 @@ export function classifyMaterial(name, path, mime) {
   )
     return "recording";
   if (/lab_questions|(^|[ /_-])labs?([ /_.-]|$)/.test(s)) return "lab";
-  if (/resource_creation|guide/.test(s)) return "guide";
+  if (/resource_creation|guide|runbook|cheatsheet/.test(s)) return "guide";
   if (/sop|checklist/.test(s)) return "sop";
   if (/\.pptx?$/.test(s) || mime === "application/vnd.google-apps.presentation")
     return "slides";
+  if (/\.(png|jpe?g|webp|svg)$/.test(s) || mime.startsWith("image/"))
+    return "image";
   if (
-    /notes|\.pdf$|\.docx?$|\.md$|\.txt$/.test(s) ||
+    /notes|\.(pdf|docx?|md|txt|ya?ml|sh|py|json|zip|csv|xlsx)$/.test(s) ||
     mime === "application/vnd.google-apps.document"
   )
     return "notes";
   return "private";
 }
+
 function driveUrl(value, id) {
   let u;
   try {
@@ -105,11 +198,37 @@ function driveUrl(value, id) {
     fail(400, "URL must identify the imported Drive file.");
   return u.href;
 }
-function lesson(name) {
-  const m = name.match(/(?:day|lesson|topic)[ _-]*0*(\d{1,3})/i);
+
+function lesson(name, path = "") {
+  const combined = `${path}/${name}`;
+  const m = combined.match(/(?:day|lesson|topic|module)[ _-]*0*(\d{1,3})/i);
   return m ? Number(m[1]) : 1;
 }
-export async function saveSource(db, batchId, input, enabled = true) {
+
+function extractClassDate(item) {
+  if (
+    typeof item.class_date === "string" &&
+    /^\d{4}-\d{2}-\d{2}$/.test(item.class_date)
+  ) {
+    return item.class_date;
+  }
+  const combined = `${item.source_path || ""} ${item.name || ""}`;
+  const isoMatch = combined.match(/\b(20\d{2}-\d{2}-\d{2})\b/);
+  if (isoMatch) return isoMatch[1];
+  const ts = item.modified_time || item.revision || "";
+  if (typeof ts === "string" && /^\d{4}-\d{2}-\d{2}T/.test(ts)) {
+    return istDateInfo(ts).dateKey;
+  }
+  return istDateInfo().dateKey;
+}
+
+export async function saveSource(
+  db,
+  batchId,
+  input,
+  enabled = true,
+  configInput = null,
+) {
   if (!(await one(db, "SELECT id FROM batches WHERE id=?", batchId)))
     fail(400, "Choose an existing batch.");
   const parsed = folderInput(input),
@@ -118,11 +237,14 @@ export async function saveSource(db, batchId, input, enabled = true) {
       "SELECT * FROM automation_sources WHERE batch_id=?",
       batchId,
     );
+  const mergedConfig = JSON.stringify(
+    parseSourceConfig(configInput !== null ? configInput : old?.config),
+  );
   if (old) {
     const changed = old.folder_input !== parsed.input;
     await run(
       db,
-      `UPDATE automation_sources SET folder_input=?,folder_id=?,folder_name=?,enabled=?,status=?,last_error=?,sync_requested=1,generation=generation+? WHERE id=?`,
+      `UPDATE automation_sources SET folder_input=?,folder_id=?,folder_name=?,enabled=?,status=?,last_error=?,sync_requested=1,generation=generation+?,config=? WHERE id=?`,
       parsed.input,
       changed ? parsed.id : old.folder_id,
       changed ? null : old.folder_name,
@@ -130,6 +252,7 @@ export async function saveSource(db, batchId, input, enabled = true) {
       changed ? "pending" : old.status,
       changed ? null : old.last_error,
       changed ? 1 : 0,
+      mergedConfig,
       old.id,
     );
     if (changed) {
@@ -151,16 +274,18 @@ export async function saveSource(db, batchId, input, enabled = true) {
   const id = uuid();
   await run(
     db,
-    "INSERT INTO automation_sources (id,batch_id,folder_input,folder_id,enabled,created) VALUES (?,?,?,?,?,?)",
+    "INSERT INTO automation_sources (id,batch_id,folder_input,folder_id,enabled,config,created) VALUES (?,?,?,?,?,?,?)",
     id,
     batchId,
     parsed.input,
     parsed.id,
     enabled ? 1 : 0,
+    mergedConfig,
     now(),
   );
   return id;
 }
+
 async function audit(db, actor, action, entity) {
   await run(
     db,
@@ -172,15 +297,12 @@ async function audit(db, actor, action, entity) {
     now(),
   );
 }
+
 export async function automationState(db) {
   return {
-    sources: await Promise.all(
-      (
-        await all(
-          db,
-          "SELECT s.*,b.name batch_name,b.course_id FROM automation_sources s JOIN batches b ON b.id=s.batch_id ORDER BY s.created DESC",
-        )
-      ).map(async (s) => ({ ...s, ...(await sourcePolicy(db, s.id)) })),
+    sources: await all(
+      db,
+      "SELECT s.*,b.name batch_name,b.course_id FROM automation_sources s JOIN batches b ON b.id=s.batch_id ORDER BY s.created DESC",
     ),
     items: await all(
       db,
@@ -192,14 +314,12 @@ export async function automationState(db) {
     ),
   };
 }
+
 export async function adminAutomation(req, env, u) {
-  if (u.role !== "admin") fail(403, "Administrator access required.");
+  staff(u);
   const db = env.DB,
     p = new URL(req.url).pathname;
-  const runtime = {
-    importer_configured: !!env.IMPORTER_TOKEN_SHA256,
-    engine_ready: !!(env.AZURE_ENGINE_URL && env.AZURE_ENGINE_KEY),
-  };
+  const runtime = { importer_configured: !!env.IMPORTER_TOKEN_SHA256 };
   if (p.endsWith("/state") && req.method === "GET")
     return response({ ...(await automationState(db)), ...runtime });
   if (req.method !== "POST") fail(405, "Method not allowed.");
@@ -210,51 +330,8 @@ export async function adminAutomation(req, env, u) {
       d.batch_id,
       d.folder_input,
       d.enabled !== false,
+      d.config !== undefined ? d.config : null,
     );
-    const oldPolicy = await sourcePolicy(db, id);
-    if (d.exclusions !== undefined) {
-      const exclusions = Array.isArray(d.exclusions)
-        ? d.exclusions
-        : String(d.exclusions)
-            .split(/\n|,/)
-            .map((v) => v.trim())
-            .filter(Boolean);
-      if (
-        exclusions.length > 100 ||
-        exclusions.some(
-          (v) => typeof v !== "string" || v.length > 300 || v.includes(".."),
-        )
-      )
-        fail(400, "Use up to 100 folder IDs, names or relative paths.");
-      await run(
-        db,
-        "INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-        "source-policy:" + id,
-        JSON.stringify({ ...oldPolicy, exclusions }),
-      );
-      if (
-        JSON.stringify(oldPolicy.exclusions || []) !==
-        JSON.stringify(exclusions)
-      ) {
-        await db.batch([
-          db
-            .prepare(
-              "UPDATE automation_sources SET generation=generation+1,sync_requested=1 WHERE id=?",
-            )
-            .bind(id),
-          db
-            .prepare(
-              "UPDATE import_runs SET status='failed',finished=?,message='Folder exclusions changed; restart scan.' WHERE source_id=? AND status='running'",
-            )
-            .bind(now(), id),
-          db
-            .prepare(
-              "UPDATE import_items SET status='superseded',review_note='Folder exclusions changed before review.' WHERE source_id=? AND status='pending'",
-            )
-            .bind(id),
-        ]);
-      }
-    }
     await audit(db, u.id, "save:automation_source", id);
     return response({ id });
   }
@@ -283,57 +360,6 @@ export async function adminAutomation(req, env, u) {
         : "Queued for the next scheduled scan. Configure the Azure engine endpoint to enable immediate Sync Up.",
     });
   }
-  if (p.endsWith("/bulk-review")) {
-    if (!Array.isArray(d.ids) || !d.ids.length || d.ids.length > 100)
-      fail(400, "Select 1–100 materials.");
-    if (d.confirmed_student_safe !== true)
-      fail(400, "Confirm the selected materials are student-safe.");
-    const results = [];
-    const batches = new Set();
-    for (const id of [...new Set(d.ids)]) {
-      try {
-        const item = await one(
-          db,
-          "SELECT s.batch_id FROM import_items i JOIN automation_sources s ON s.id=i.source_id WHERE i.id=?",
-          id,
-        );
-        const r = await adminAutomation(
-          new Request(new URL("/api/admin/automation/review", req.url), {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              id,
-              action: "approve",
-              confirmed_student_safe: true,
-              topic: d.topic || undefined,
-            }),
-          }),
-          { ...env, SKIP_ASSESSMENT_PLAN: true },
-          u,
-        );
-        results.push({ id, ok: r.ok });
-        if (item) batches.add(item.batch_id);
-      } catch (e) {
-        results.push({
-          id,
-          ok: false,
-          message: e.status ? e.message : "Release failed; retry.",
-        });
-      }
-    }
-    for (const batch of batches) await planAssessments(env, batch);
-    try {
-      await wakeEngine(env);
-    } catch {}
-    return response({
-      results,
-      message:
-        results.filter((r) => r.ok).length +
-        " released; " +
-        results.filter((r) => !r.ok).length +
-        " need attention.",
-    });
-  }
   if (p.endsWith("/review")) {
     const i = await one(
       db,
@@ -343,12 +369,19 @@ export async function adminAutomation(req, env, u) {
     if (!i) fail(404, "Import not found.");
     if (i.generation !== i.current_generation)
       fail(409, "The source folder changed. Review a current import.");
-    if (i.status !== "pending")
-      fail(409, "This revision has already been reviewed or is restricted.");
+
+    // Support category override if staff explicitly chooses a valid student-facing kind
+    const requestedKind = d.kind || d.override_kind || null;
+    const hasValidOverride =
+      requestedKind && STUDENT_CONTENT_KINDS.includes(requestedKind);
+
     if (d.action === "reject") {
+      if (i.status !== "pending" && i.status !== "restricted")
+        fail(409, "This revision has already been reviewed or is restricted.");
       await run(
         db,
-        "UPDATE import_items SET status='rejected',review_note=?,reviewed_by=?,reviewed_at=? WHERE id=? AND status='pending'",
+        "UPDATE import_items SET status='rejected',kind=COALESCE(?,kind),review_note=?,reviewed_by=?,reviewed_at=? WHERE id=?",
+        requestedKind === "private" ? "private" : null,
         String(d.note || "").slice(0, 2000),
         u.id,
         now(),
@@ -357,13 +390,21 @@ export async function adminAutomation(req, env, u) {
       await audit(db, u.id, "reject:import", i.id);
       return response({ ok: true });
     }
+
+    if (
+      i.status !== "pending" &&
+      !(i.status === "restricted" && hasValidOverride)
+    )
+      fail(409, "This revision has already been reviewed or is restricted.");
+
     if (d.action !== "approve") fail(400, "Choose approve or reject.");
     if (d.confirmed_student_safe !== true)
       fail(
         400,
         "Review the file and confirm that it is safe to share with students.",
       );
-    if (i.kind === "private")
+    const effectiveKind = hasValidOverride ? requestedKind : i.kind;
+    if (effectiveKind === "private")
       fail(
         403,
         "Instructor material and result workbooks cannot be published to students.",
@@ -382,7 +423,7 @@ export async function adminAutomation(req, env, u) {
     if (!Number.isInteger(order) || order < 1 || order > 100)
       fail(400, "Topic number must be between 1 and 100.");
     let url = i.source_url;
-    if (i.kind === "test_link") {
+    if (effectiveKind === "test_link") {
       try {
         const parsed = new URL(d.student_url);
         if (
@@ -401,70 +442,188 @@ export async function adminAutomation(req, env, u) {
     }
     const previous = await one(
       db,
-      "SELECT content_id FROM import_items WHERE source_id=? AND drive_file_id=? AND content_id IS NOT NULL ORDER BY reviewed_at DESC LIMIT 1",
+      "SELECT content_id FROM import_items WHERE source_id=? AND generation=? AND drive_file_id=? AND content_id IS NOT NULL ORDER BY reviewed_at DESC LIMIT 1",
       i.source_id,
+      i.generation,
       i.drive_file_id,
     );
     const cid = previous?.content_id || uuid(),
       title = text(d.title || i.title, "Title", 200),
       topic = text(d.topic || i.topic, "Topic", 200);
     const instructions = String(d.body || "").slice(0, 30000);
+    const timestamp = now();
     await db.batch([
       db
         .prepare(
-          "INSERT INTO content (id,course_id,batch_id,kind,title,topic,topic_order,body,url,starts_at,duration,file_id,published,created) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,topic=excluded.topic,topic_order=excluded.topic_order,body=excluded.body,url=excluded.url,file_id=excluded.file_id,published=1",
+          "INSERT INTO content (id,course_id,batch_id,kind,title,topic,topic_order,body,url,starts_at,duration,file_id,published,created) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET kind=excluded.kind,title=excluded.title,topic=excluded.topic,topic_order=excluded.topic_order,body=excluded.body,url=excluded.url,file_id=excluded.file_id,published=1",
         )
         .bind(
           cid,
           i.course_id,
           i.batch_id,
-          i.kind,
+          effectiveKind,
           title,
           topic,
           order,
           instructions,
-          i.file_id && i.kind !== "test_link" ? "" : url,
+          i.file_id && effectiveKind !== "test_link" ? "" : url,
           "",
           60,
-          i.kind === "test_link" ? null : i.file_id,
+          effectiveKind === "test_link" ? null : i.file_id,
           1,
-          now(),
+          timestamp,
         ),
       db
         .prepare(
-          "UPDATE import_items SET status='superseded' WHERE source_id=? AND drive_file_id=? AND status='published'",
+          "UPDATE import_items SET status='superseded' WHERE source_id=? AND generation=? AND drive_file_id=? AND status='published'",
         )
-        .bind(i.source_id, i.drive_file_id),
+        .bind(i.source_id, i.generation, i.drive_file_id),
       db
         .prepare(
-          "UPDATE import_items SET status='published',content_id=?,title=?,topic=?,topic_order=?,review_note=?,reviewed_by=?,reviewed_at=? WHERE id=? AND status='pending'",
+          "UPDATE import_items SET status='published',kind=?,content_id=?,title=?,topic=?,topic_order=?,review_note=?,reviewed_by=?,reviewed_at=? WHERE id=?",
         )
         .bind(
+          effectiveKind,
           cid,
           title,
           topic,
           order,
           String(d.note || "").slice(0, 2000),
           u.id,
-          now(),
+          timestamp,
           i.id,
         ),
       db
         .prepare(
           "INSERT INTO audit (id,actor,action,entity,created) VALUES (?,?,?,?,?)",
         )
-        .bind(uuid(), u.id, "publish:import", i.id, now()),
+        .bind(uuid(), u.id, "publish:import", i.id, timestamp),
     ]);
-    if (!env.SKIP_ASSESSMENT_PLAN) {
-      await planAssessments(env, i.batch_id);
-      try {
-        await wakeEngine(env);
-      } catch {}
-    }
     return response({ ok: true, content_id: cid });
+  }
+  if (p.endsWith("/approve-batch")) {
+    if (d.confirmed_student_safe !== true)
+      fail(
+        400,
+        "Confirm that the selected items are safe to publish to students.",
+      );
+    let candidates = [];
+    if (Array.isArray(d.item_ids) && d.item_ids.length) {
+      for (const itemId of d.item_ids.slice(0, 100)) {
+        const row = await one(
+          db,
+          "SELECT i.*,s.batch_id,s.generation current_generation,b.course_id FROM import_items i JOIN automation_sources s ON s.id=i.source_id JOIN batches b ON b.id=s.batch_id WHERE i.id=?",
+          itemId,
+        );
+        if (row) candidates.push(row);
+      }
+    } else if (d.batch_id) {
+      candidates = await all(
+        db,
+        "SELECT i.*,s.batch_id,s.generation current_generation,b.course_id FROM import_items i JOIN automation_sources s ON s.id=i.source_id JOIN batches b ON b.id=s.batch_id WHERE s.batch_id=? AND i.status='pending' AND i.generation=s.generation ORDER BY i.created ASC",
+        d.batch_id,
+      );
+      if (d.class_date) {
+        candidates = candidates.filter((c) => c.class_date === d.class_date);
+      }
+    } else {
+      fail(400, "Specify batch_id or item_ids for bunch approval.");
+    }
+
+    const eligible = candidates.filter(
+      (i) =>
+        i.status === "pending" &&
+        i.generation === i.current_generation &&
+        STUDENT_CONTENT_KINDS.includes(i.kind) &&
+        i.kind !== "test_link",
+    );
+    if (!eligible.length)
+      fail(400, "No pending student-safe items matched for bunch approval.");
+
+    const contentIds = [];
+    const timestamp = now();
+    for (const i of eligible) {
+      const newer = await one(
+        db,
+        "SELECT id FROM import_items WHERE source_id=? AND generation=? AND drive_file_id=? AND created>?",
+        i.source_id,
+        i.generation,
+        i.drive_file_id,
+        i.created,
+      );
+      if (newer) continue;
+      const previous = await one(
+        db,
+        "SELECT content_id FROM import_items WHERE source_id=? AND generation=? AND drive_file_id=? AND content_id IS NOT NULL ORDER BY reviewed_at DESC LIMIT 1",
+        i.source_id,
+        i.generation,
+        i.drive_file_id,
+      );
+      const cid = previous?.content_id || uuid();
+      const order = Number(d.topic_order || i.topic_order) || 1;
+      const topic = String(
+        d.topic ||
+          (i.topic === "Needs topic review" ? `Topic ${order}` : i.topic),
+      ).slice(0, 200);
+      const title = String(i.title || "Class material").slice(0, 200);
+
+      await db.batch([
+        db
+          .prepare(
+            "INSERT INTO content (id,course_id,batch_id,kind,title,topic,topic_order,body,url,starts_at,duration,file_id,published,created) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET kind=excluded.kind,title=excluded.title,topic=excluded.topic,topic_order=excluded.topic_order,url=excluded.url,file_id=excluded.file_id,published=1",
+          )
+          .bind(
+            cid,
+            i.course_id,
+            i.batch_id,
+            i.kind,
+            title,
+            topic,
+            Math.min(100, Math.max(1, order)),
+            "",
+            i.file_id ? "" : i.source_url,
+            "",
+            60,
+            i.file_id,
+            1,
+            timestamp,
+          ),
+        db
+          .prepare(
+            "UPDATE import_items SET status='superseded' WHERE source_id=? AND generation=? AND drive_file_id=? AND status='published'",
+          )
+          .bind(i.source_id, i.generation, i.drive_file_id),
+        db
+          .prepare(
+            "UPDATE import_items SET status='published',content_id=?,topic=?,topic_order=?,review_note=?,reviewed_by=?,reviewed_at=? WHERE id=?",
+          )
+          .bind(
+            cid,
+            topic,
+            Math.min(100, Math.max(1, order)),
+            String(d.note || "Bunch approved").slice(0, 2000),
+            u.id,
+            timestamp,
+            i.id,
+          ),
+      ]);
+      contentIds.push(cid);
+    }
+    await audit(
+      db,
+      u.id,
+      "approve_batch:import",
+      d.batch_id || eligible[0].batch_id,
+    );
+    return response({
+      ok: true,
+      approved_count: contentIds.length,
+      content_ids: contentIds,
+    });
   }
   fail(404, "Automation action not found.");
 }
+
 async function authenticate(req, env) {
   const token = req.headers.get("X-Arks-Importer-Token");
   if (!env.IMPORTER_TOKEN_SHA256 || !token || token.length > 8000)
@@ -483,10 +642,11 @@ async function authenticate(req, env) {
     diff |= hash.charCodeAt(i) ^ env.IMPORTER_TOKEN_SHA256.charCodeAt(i);
   if (diff) fail(401, "Automation credentials are invalid.");
 }
+
 async function activeRun(db, id) {
   const r = await one(
     db,
-    "SELECT r.*,s.folder_id,s.enabled,s.generation current_generation FROM import_runs r JOIN automation_sources s ON s.id=r.source_id WHERE r.id=?",
+    "SELECT r.*,s.folder_id,s.enabled,s.config source_config,s.generation current_generation FROM import_runs r JOIN automation_sources s ON s.id=r.source_id WHERE r.id=?",
     id,
   );
   if (
@@ -499,6 +659,7 @@ async function activeRun(db, id) {
     fail(409, "The scan is no longer active. Claim a new scan.");
   return r;
 }
+
 export async function serviceAutomation(req, env) {
   await authenticate(req, env);
   if (new URL(req.url).pathname === "/api/automation/job-file")
@@ -512,7 +673,7 @@ export async function serviceAutomation(req, env) {
       sources: (await automationState(db)).sources,
       policy:
         "Import drafts only. Never publish, change grades or modify student records.",
-      version: 1,
+      version: 2,
     });
   if (req.method === "GET" && p.endsWith("/state"))
     return response(await automationState(db));
@@ -540,7 +701,7 @@ export async function serviceAutomation(req, env) {
     )
       fail(400, "File must be between 1 byte and 20 MB.");
     if (
-      !/\.(pdf|pptx|docx|txt|md|png|jpg|jpeg|webp|zip|xlsx|csv)$/i.test(
+      !/\.(pdf|pptx|ppt|docx|doc|txt|md|png|jpg|jpeg|webp|svg|zip|xlsx|csv|yaml|yml|sh|py|json)$/i.test(
         file.name,
       )
     )
@@ -649,10 +810,7 @@ export async function serviceAutomation(req, env) {
       "UPDATE automation_sources SET status='scanning',last_error=NULL,sync_requested=0 WHERE id=?",
       s.id,
     );
-    return response({
-      run_id: id,
-      source: { ...s, ...(await sourcePolicy(db, s.id)) },
-    });
+    return response({ run_id: id, source: s });
   }
   if (p.endsWith("/resolve")) {
     const r = await activeRun(db, d.run_id);
@@ -675,35 +833,13 @@ export async function serviceAutomation(req, env) {
     );
     return response({ ok: true });
   }
-  if (p.endsWith("/folders")) {
-    const r = await activeRun(db, d.run_id);
-    if (!Array.isArray(d.folders) || d.folders.length > 100)
-      fail(400, "Send up to 100 folders.");
-    if (
-      d.folders.some(
-        (f) =>
-          !fileId(f.id) || typeof f.path !== "string" || f.path.length > 1000,
-      )
-    )
-      fail(400, "Invalid folder metadata.");
-    const policy = await sourcePolicy(db, r.source_id),
-      known = new Map((policy.folders || []).map((f) => [f.id, f]));
-    for (const f of d.folders) known.set(f.id, { id: f.id, path: f.path });
-    await run(
-      db,
-      "INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-      "source-policy:" + r.source_id,
-      JSON.stringify({ ...policy, folders: [...known.values()].slice(-2000) }),
-    );
-    return response({ ok: true });
-  }
   if (p.endsWith("/ingest")) {
     const r = await activeRun(db, d.run_id);
     if (!r.folder_id) fail(409, "Resolve the source folder before importing.");
     if (!Array.isArray(d.items) || d.items.length > 50)
       fail(400, "Send at most 50 items per request.");
+    const sourceCfg = parseSourceConfig(r.source_config);
     const output = [];
-    const policy = await sourcePolicy(db, r.source_id);
     for (const v of d.items) {
       if (!fileId(v.drive_file_id)) fail(400, "Invalid source file ID.");
       if (
@@ -715,22 +851,16 @@ export async function serviceAutomation(req, env) {
         path = text(v.source_path, "Source path", 1000),
         mime = text(v.mime, "MIME type", 150),
         revision = text(v.revision, "Revision", 200),
-        kind = classifyMaterial(name, path, mime),
+        kind = classifyMaterial(name, path, mime, sourceCfg),
         url = driveUrl(v.url, v.drive_file_id),
-        order = lesson(name),
+        order = lesson(name, path),
+        classDate = extractClassDate(v),
         size = Number(v.size || 0);
       if (!Number.isSafeInteger(size) || size < 0)
         fail(400, "Invalid file size.");
-      if (
-        excludedPath(path, v.drive_file_id, policy) ||
-        v.ancestor_ids.some((id) => (policy.exclusions || []).includes(id))
-      ) {
-        output.push({ status: "restricted", excluded: true });
-        continue;
-      }
       const old = await one(
         db,
-        "SELECT id,status,file_id FROM import_items WHERE source_id=? AND generation=? AND drive_file_id=? AND revision=?",
+        "SELECT id,status,file_id,class_date FROM import_items WHERE source_id=? AND generation=? AND drive_file_id=? AND revision=?",
         r.source_id,
         r.generation,
         v.drive_file_id,
@@ -743,13 +873,13 @@ export async function serviceAutomation(req, env) {
       const id = uuid();
       const warning =
         kind === "private"
-          ? "Instructor-only, draft, result data or unrecognized material. This item cannot be released through the content inbox."
+          ? "Instructor-only, excluded folder/type, draft, or result data. Override category only if confirmed safe for students."
           : kind === "test_link"
             ? "A published student Google Form link is required. Prompts and answer keys must remain private."
             : "Drive links retain their existing sharing permissions. A copied attachment can be opened within the portal after approval.";
       await run(
         db,
-        "INSERT OR IGNORE INTO import_items (id,source_id,generation,drive_file_id,revision,title,kind,topic,topic_order,source_path,source_url,mime,size,status,warning,created) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT OR IGNORE INTO import_items (id,source_id,generation,drive_file_id,revision,title,kind,topic,topic_order,source_path,source_url,mime,size,status,warning,class_date,created) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         id,
         r.source_id,
         r.generation,
@@ -757,7 +887,7 @@ export async function serviceAutomation(req, env) {
         revision,
         name.replace(/\.[^.]+$/, ""),
         kind,
-        order === 1 && !/day|lesson|topic/i.test(name)
+        order === 1 && !/day|lesson|topic|module/i.test(`${path}/${name}`)
           ? "Needs topic review"
           : `Day ${order}`,
         Math.min(100, Math.max(1, order)),
@@ -767,11 +897,12 @@ export async function serviceAutomation(req, env) {
         size,
         kind === "private" ? "restricted" : "pending",
         warning,
+        classDate,
         now(),
       );
       const saved = await one(
         db,
-        "SELECT id,status,file_id FROM import_items WHERE source_id=? AND generation=? AND drive_file_id=? AND revision=?",
+        "SELECT id,status,file_id,class_date FROM import_items WHERE source_id=? AND generation=? AND drive_file_id=? AND revision=?",
         r.source_id,
         r.generation,
         v.drive_file_id,
@@ -814,14 +945,6 @@ export async function serviceAutomation(req, env) {
           r.generation,
         ),
     ]);
-    if (status === "succeeded") {
-      const source = await one(
-        db,
-        "SELECT batch_id FROM automation_sources WHERE id=?",
-        r.source_id,
-      );
-      await planAssessments(env, source.batch_id);
-    }
     return response({ ok: true });
   }
   fail(404, "Automation endpoint not found.");

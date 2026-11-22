@@ -1,8 +1,6 @@
-import { AssessmentAutomation } from "./WorkflowTools.jsx";
-import { DraftContext, DraftForm, useDraftState } from "./Drafts.jsx";
-import { readApiResponse } from "../shared/http.js";
 import { QUESTION_TYPES } from "../shared/assessment.js";
 import React, { useEffect, useState } from "react";
+
 export async function request(path, body) {
   const r = await fetch(
     "/api/" + path,
@@ -14,8 +12,11 @@ export async function request(path, body) {
         }
       : {},
   );
-  return readApiResponse(r);
+  const d = await r.json();
+  if (!r.ok) throw new Error(d.error || "Request failed.");
+  return d;
 }
+
 function Field({ label, children, ...props }) {
   return (
     <label>
@@ -24,6 +25,7 @@ function Field({ label, children, ...props }) {
     </label>
   );
 }
+
 function Select({ label, value, onChange, options }) {
   return (
     <Field label={label}>
@@ -37,21 +39,15 @@ function Select({ label, value, onChange, options }) {
     </Field>
   );
 }
+
 export function Login({ onLogin }) {
   const [config, setConfig] = useState({}),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
   useEffect(() => {
-    const authError = new URLSearchParams(window.location.search).get(
-      "auth_error",
-    );
-    if (authError) {
-      setError(authError);
-      window.history.replaceState(null, "", window.location.pathname);
-    }
     request("auth/config")
       .then(setConfig)
-      .catch((e) => setError(e.message));
+      .catch(() => {});
   }, []);
   return (
     <main className="login-page">
@@ -62,30 +58,22 @@ export function Login({ onLogin }) {
           alt="Arks Global Asia Institutes"
         />
         <h1>Your learning starts here.</h1>
-        <p>Students: use the Google account enrolled by your institute.</p>
-        {config.entra_ready ? (
-          <a className="button" href="/api/auth/entra/start">
-            Continue with Google through your institute
-          </a>
-        ) : config.mode !== "entra" && config.google_ready ? (
+        <p>
+          Students & instructors: sign in with the Google account enrolled by
+          your institute.
+        </p>
+        {config.google_ready ? (
           <a className="button" href="/api/auth/google/start">
             Continue with Google
           </a>
         ) : (
           <p className="info-strip">
-            Your institute is completing sign-in setup. Please try again shortly
-            or contact support.
-          </p>
-        )}
-        {config.portal_ready === false && (
-          <p className="help-note">
-            The campus service is being configured. Your institute will confirm
-            when enrollment opens.
+            Google sign-in is awaiting configuration by your administrator.
           </p>
         )}
         <hr />
-        <h2>Administrator sign-in</h2>
-        <DraftForm
+        <h2>Administrator & Trainer sign-in</h2>
+        <form
           className="form"
           onSubmit={async (e) => {
             e.preventDefault();
@@ -105,7 +93,7 @@ export function Login({ onLogin }) {
           }}
         >
           <Field
-            label="Admin email"
+            label="Staff email (Admin or Trainer)"
             name="email"
             type="email"
             autoComplete="username"
@@ -119,18 +107,19 @@ export function Login({ onLogin }) {
             required
           />
           <button className="button" disabled={busy}>
-            {busy ? "Signing in…" : "Open admin portal"}
+            {busy ? "Signing in…" : "Open staff portal"}
           </button>
           {error && (
             <p role="alert" className="form-error">
               {error}
             </p>
           )}
-        </DraftForm>
+        </form>
       </section>
     </main>
   );
 }
+
 export function Tour({ user, adminMode, onNavigate, blocked }) {
   const key = "arks-tour-" + user.id + "-" + (adminMode ? "admin" : "student"),
     [step, setStep] = useState(0),
@@ -145,17 +134,17 @@ export function Tour({ user, adminMode, onNavigate, blocked }) {
     ? [
         [
           "Your command centre",
-          "Enroll students, organize batches, manage fees and publish class resources.",
+          "Enroll students, organize batches, manage curriculum and publish class resources across 6 focused workspaces.",
           "dashboard",
         ],
         [
-          "Automation and approvals",
-          "Sync Up imports new materials. Review each document before releasing it.",
+          "Drive Sync Up & 1-Click Day Approval",
+          "Sync Up imports notes, PPTs, diagrams, guides and recordings. Override categories or approve an entire day in one click.",
           "dashboard",
         ],
         [
-          "A course that grows with you",
-          "Schedule a series, manage support links, and create assessments from approved materials.",
+          "Automated 9:00 AM IST Assessments",
+          "Daily tests (20+ Qs Mon–Sat) and Sunday Weekly tests (25+ Qs) run automatically with DeepSeek diagnostic coaching.",
           "dashboard",
         ],
       ]
@@ -172,7 +161,7 @@ export function Tour({ user, adminMode, onNavigate, blocked }) {
         ],
         [
           "Practice and assessments",
-          "Upload lab solutions and take each assessment once. You can resume an unfinished attempt.",
+          "Upload lab solutions and take each assessment with the question palette and diagnostic coaching report.",
           "tests",
         ],
         [
@@ -225,6 +214,7 @@ export function Tour({ user, adminMode, onNavigate, blocked }) {
     </div>
   );
 }
+
 export function SupportLinks({ batch }) {
   const c = JSON.parse(batch?.config || "{}");
   return (
@@ -256,6 +246,7 @@ export function SupportLinks({ batch }) {
     </section>
   );
 }
+
 export function Assessments({ tests, attempts, render }) {
   const [kind, setKind] = useState("all"),
     [status, setStatus] = useState("all");
@@ -284,7 +275,7 @@ export function Assessments({ tests, attempts, render }) {
           ["all", "All tests"],
           ["daily", "Daily"],
           ["weekly", "Weekly"],
-          ["topic", "Completed topic"],
+          ["monthly", "Monthly"],
         ].map(([id, label]) => (
           <button
             key={id}
@@ -323,6 +314,7 @@ export function Assessments({ tests, attempts, render }) {
     </>
   );
 }
+
 export function Roadmap({ batch, course, data }) {
   const cfg = JSON.parse(batch.config || "{}"),
     roadmap = cfg.roadmap?.length ? cfg.roadmap : JSON.parse(course.syllabus),
@@ -334,37 +326,34 @@ export function Roadmap({ batch, course, data }) {
       </h2>
       <p>
         {cfg.roadmap?.length
-          ? "Published from the batch SOP and reviewed by your administrator."
-          : "Your administrator can extract and approve a roadmap from this batch’s SOP."}
+          ? "Published from the batch SOP and reviewed by your instructor."
+          : "Your instructor can extract and approve a roadmap from this batch’s SOP."}
       </p>
       <div className="roadmap">
         {roadmap.map((s, i) => {
           const resources = data.content.filter(
             (c) =>
-              (cfg.assessment_automation?.lesson_topics &&
-              Object.keys(cfg.assessment_automation.lesson_topics).length
-                ? String(
-                    cfg.assessment_automation.lesson_topics[c.topic_order] ||
-                      c.topic,
-                  ).toLowerCase() === s.title.toLowerCase()
-                : c.topic_order === i + 1) &&
-              ["notes", "slides", "guide", "recording", "lab"].includes(c.kind),
+              c.topic_order === i + 1 &&
+              ["notes", "slides", "guide", "recording", "lab", "image"].includes(
+                c.kind,
+              ),
           );
           const complete = resources.filter((c) => done.has(c.id)).length;
-          const covered =
-            resources.length > 0 &&
-            resources.every((c) => c.topic_order <= batch.covered);
           return (
             <div className="roadmap-item" key={i}>
-              <div className={"road-number " + (covered ? "covered" : "")}>
+              <div
+                className={
+                  "road-number " + (i < batch.covered ? "covered" : "")
+                }
+              >
                 {i + 1}
               </div>
               <div>
                 <h3>{s.title}</h3>
                 <p>{s.detail}</p>
                 <small>
-                  {covered ? "Covered in class" : "Upcoming"} · {complete}/
-                  {resources.length} tasks completed
+                  {i < batch.covered ? "Covered in class" : "Upcoming"} ·{" "}
+                  {complete}/{resources.length} tasks completed
                 </small>
                 <progress
                   max={Math.max(1, resources.length)}
@@ -378,6 +367,7 @@ export function Roadmap({ batch, course, data }) {
     </section>
   );
 }
+
 function zoned(date, time, zone) {
   const [yy, mm, dd] = date.split("-").map(Number),
     [hh, mi] = time.split(":").map(Number);
@@ -409,11 +399,10 @@ function zoned(date, time, zone) {
   }
   return new Date(timestamp).toISOString();
 }
-export function AdminTools({ tab, data, batchId, act, refresh, edit }) {
-  const draftScope = React.useContext(DraftContext);
+
+export function AdminTools({ tab, data, batchId, user, refresh, edit }) {
   const [features, setFeatures] = useState(null),
-    [localBatch, setLocalBatch] = useDraftState(
-      "selected-batch",
+    [localBatch, setLocalBatch] = useState(
       batchId || data.batches[0]?.id || "",
     ),
     [notice, setNotice] = useState(""),
@@ -442,100 +431,91 @@ export function AdminTools({ tab, data, batchId, act, refresh, edit }) {
   }
   if (!features) return <p>{notice || "Loading campus controls…"}</p>;
   return (
-    <DraftContext.Provider value={draftScope + ":" + localBatch}>
-      <div className="feature-tools">
-        <div className="row between wrap">
-          <h2>
+    <div className="feature-tools">
+      <div className="row between wrap">
+        <h2>
+          {
             {
-              {
-                settings: "Batch experience",
-                schedule: "Live session planner",
-                engine: "Assessment studio",
-                access: "Access & administrators",
-              }[tab]
-            }
-          </h2>
-          <Select
-            label="Batch"
-            value={localBatch}
-            onChange={setLocalBatch}
-            options={data.batches.map((b) => [b.id, b.name])}
-          />
-        </div>
-        {notice && (
-          <p role="status" className="info-strip">
-            {notice}
-          </p>
-        )}
-        {!batch ? (
-          <p>Create a batch first.</p>
-        ) : (
-          <>
-            {tab === "settings" && (
-              <BatchSettings
-                key={batch.id + "-" + batch.config}
-                batch={batch}
-                data={data}
-                save={save}
-                pending={pending}
-                features={features}
-              />
-            )}
-            {tab === "schedule" && (
-              <Schedule
-                key={batch.id}
-                batch={batch}
-                data={data}
-                save={save}
-                pending={pending}
-                edit={edit}
-              />
-            )}
-            {tab === "engine" && (
-              <AssessmentAutomation
-                batch={batch}
-                course={data.courses.find((c) => c.id === batch.course_id)}
-                save={save}
-                pending={pending}
-              />
-            )}
-            {tab === "engine" && (
-              <Studio
-                key={batch.id}
-                batch={batch}
-                data={data}
-                save={save}
-                features={features}
-                pending={pending}
-                edit={edit}
-              />
-            )}
-            {tab === "access" && (
-              <Access
-                key={batch.id}
-                batch={batch}
-                data={data}
-                save={save}
-                pending={pending}
-                features={features}
-              />
-            )}
-          </>
-        )}
+              settings: "Batch experience & roadmap",
+              schedule: "Live session planner & recordings",
+              engine: "AI Assessment Studio & 9:00 AM IST Scheduler",
+              access: "Student Onboarding, Groups & Staff Access",
+            }[tab]
+          }
+        </h2>
+        <Select
+          label="Batch"
+          value={localBatch}
+          onChange={setLocalBatch}
+          options={data.batches.map((b) => [b.id, b.name])}
+        />
       </div>
-    </DraftContext.Provider>
+      {notice && (
+        <p role="status" className="info-strip">
+          {notice}
+        </p>
+      )}
+      {!batch ? (
+        <p>Create a batch first.</p>
+      ) : (
+        <>
+          {tab === "settings" && (
+            <BatchSettings
+              key={batch.id + "-" + batch.config}
+              batch={batch}
+              data={data}
+              save={save}
+              pending={pending}
+              features={features}
+            />
+          )}
+          {tab === "schedule" && (
+            <Schedule
+              key={batch.id}
+              batch={batch}
+              data={data}
+              save={save}
+              pending={pending}
+              edit={edit}
+            />
+          )}
+          {tab === "engine" && (
+            <Studio
+              key={batch.id}
+              batch={batch}
+              data={data}
+              save={save}
+              features={features}
+              pending={pending}
+              edit={edit}
+            />
+          )}
+          {tab === "access" && (
+            <Access
+              key={batch.id}
+              batch={batch}
+              data={data}
+              user={user}
+              save={save}
+              pending={pending}
+              features={features}
+            />
+          )}
+        </>
+      )}
+    </div>
   );
 }
+
 function BatchSettings({ batch, data, save, pending, features }) {
   const cfg = JSON.parse(batch.config || "{}"),
-    [roadmap, setRoadmap] = useDraftState(
-      "roadmap:" + batch.id,
+    [roadmap, setRoadmap] = useState(
       JSON.stringify(cfg.roadmap || [], null, 2),
     ),
     [parseError, setParseError] = useState("");
   return (
     <>
-      <DraftForm
+      <form
         className="panel form"
         onSubmit={(e) => {
           e.preventDefault();
@@ -580,15 +560,13 @@ function BatchSettings({ batch, data, save, pending, features }) {
           />
         </Field>
         <Field
-          label="Lab answers folder ID (optional override)"
+          label="Lab submissions destination: Shared Drive folder ID"
           name="submission_folder"
           defaultValue={cfg.submission_folder || ""}
         />
         <p className="help-note">
           Students upload PDF/DOCX in the portal. The Azure engine transfers
-          submissions to labs/lab_answers/student-name under the connected batch
-          folder, or student-name under this override. A Shared Drive or
-          delegated Workspace identity is needed for service-account uploads.
+          submissions to this private folder.
         </p>
         <Field label="Roadmap (title and detail for each topic)">
           <textarea
@@ -606,7 +584,7 @@ function BatchSettings({ batch, data, save, pending, features }) {
         <button className="button" disabled={pending}>
           Save batch experience
         </button>
-      </DraftForm>
+      </form>
       <section className="panel">
         <h3>Extract a roadmap from the approved SOP</h3>
         {data.content
@@ -643,6 +621,7 @@ function BatchSettings({ batch, data, save, pending, features }) {
     </>
   );
 }
+
 function SopJob({ job, save }) {
   const [result, setResult] = useState(null);
   return (
@@ -683,11 +662,14 @@ function SopJob({ job, save }) {
     </div>
   );
 }
+
 function Schedule({ batch, data, save, pending, edit }) {
-  const [error, setError] = useState("");
+  const [error, setError] = useState(""),
+    [completingId, setCompletingId] = useState(null),
+    [recUrl, setRecUrl] = useState("");
   return (
     <>
-      <DraftForm
+      <form
         className="panel form"
         onSubmit={(e) => {
           e.preventDefault();
@@ -712,7 +694,7 @@ function Schedule({ batch, data, save, pending, edit }) {
           }
         }}
       >
-        <h3>Create a flexible class series</h3>
+        <h3>Create a flexible class series (9:30 PM – 10:30 PM IST default)</h3>
         <div className="two-col">
           <Field
             label="Class title ({n} adds the session number)"
@@ -742,14 +724,14 @@ function Schedule({ batch, data, save, pending, edit }) {
             type="number"
             min="1"
             max="1440"
-            defaultValue="90"
+            defaultValue="60"
           />
           <Field label="Meeting link" name="url" type="url" />
         </div>
         <div className="row gap wrap">
           {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((day, i) => (
             <label className="row gap" key={day}>
-              <input name="weekday" type="checkbox" value={i} defaultChecked />
+              <input name="weekday" type="checkbox" value={i} defaultChecked={i !== 0} />
               {day}
             </label>
           ))}
@@ -765,59 +747,110 @@ function Schedule({ batch, data, save, pending, edit }) {
         <button className="button" disabled={pending}>
           Create sessions
         </button>
-      </DraftForm>
+      </form>
       <section className="panel">
         <h3>Scheduled classes</h3>
         {data.content
           .filter((c) => c.kind === "live" && c.batch_id === batch.id)
           .sort((a, b) => a.starts_at.localeCompare(b.starts_at))
           .map((c) => (
-            <div className="session-row" key={c.id}>
-              <div className="grow">
-                <h3>{c.title}</h3>
-                <p>
-                  {new Date(c.starts_at).toLocaleString("en-IN", {
-                    timeZone: batch.timezone,
-                  })}{" "}
-                  · {c.session_status}
-                </p>
-              </div>
-              <button
-                className="button secondary"
-                onClick={() => edit("content", c)}
-              >
-                Modify
-              </button>
-              <button
-                className="text-btn"
-                disabled={pending}
-                onClick={() =>
-                  save("admin/sessions", {
-                    batch_id: batch.id,
-                    id: c.id,
-                    action:
-                      c.session_status === "cancelled" ? "restore" : "cancel",
-                  })
-                }
-              >
-                {c.session_status === "cancelled" ? "Restore" : "Cancel"}
-              </button>
-              {c.series_id && (
+            <div key={c.id}>
+              <div className="session-row">
+                <div className="grow">
+                  <h3>{c.title}</h3>
+                  <p>
+                    {c.starts_at
+                      ? new Date(c.starts_at).toLocaleString("en-IN", {
+                          timeZone: batch.timezone,
+                        })
+                      : "Unscheduled"}{" "}
+                    · {c.session_status}
+                  </p>
+                </div>
+                {c.session_status !== "completed" && (
+                  <button
+                    className="button"
+                    type="button"
+                    onClick={() => {
+                      setCompletingId(completingId === c.id ? null : c.id);
+                      setRecUrl("");
+                    }}
+                  >
+                    Complete & attach recording
+                  </button>
+                )}
+                <button
+                  className="button secondary"
+                  onClick={() => edit("content", c)}
+                >
+                  Modify
+                </button>
                 <button
                   className="text-btn"
-                  onClick={() => {
-                    if (window.confirm("Cancel every class in this series?"))
-                      save("admin/sessions", {
-                        batch_id: batch.id,
-                        id: c.id,
-                        series_id: c.series_id,
-                        whole_series: true,
-                        action: "cancel",
-                      });
+                  disabled={pending}
+                  onClick={() =>
+                    save("admin/sessions", {
+                      batch_id: batch.id,
+                      id: c.id,
+                      action:
+                        c.session_status === "cancelled" ? "restore" : "cancel",
+                    })
+                  }
+                >
+                  {c.session_status === "cancelled" ? "Restore" : "Cancel"}
+                </button>
+                {c.series_id && (
+                  <button
+                    className="text-btn"
+                    onClick={() => {
+                      if (window.confirm("Cancel every class in this series?"))
+                        save("admin/sessions", {
+                          batch_id: batch.id,
+                          id: c.id,
+                          series_id: c.series_id,
+                          whole_series: true,
+                          action: "cancel",
+                        });
+                    }}
+                  >
+                    Cancel series
+                  </button>
+                )}
+              </div>
+              {completingId === c.id && (
+                <form
+                  className="panel form"
+                  onSubmit={async (e) => {
+                    e.preventDefault();
+                    const res = await save("admin/complete-session", {
+                      session_id: c.id,
+                      recording_url: recUrl,
+                      advance_covered: true,
+                    });
+                    if (res) setCompletingId(null);
                   }}
                 >
-                  Cancel series
-                </button>
+                  <h4>Complete session & publish recording</h4>
+                  <Field
+                    label="Recording HTTPS URL (Drive / YouTube / Meet recording link, optional)"
+                    type="url"
+                    value={recUrl}
+                    onChange={(e) => setRecUrl(e.target.value)}
+                    placeholder="https://drive.google.com/file/d/..."
+                  />
+                  <div className="row gap">
+                    <button className="button" disabled={pending}>
+                      Mark completed & publish recording
+                    </button>
+                    <button
+                      type="button"
+                      className="button secondary"
+                      onClick={() => setCompletingId(null)}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </form>
               )}
             </div>
           ))}
@@ -825,18 +858,67 @@ function Schedule({ batch, data, save, pending, edit }) {
     </>
   );
 }
+
 function Studio({ batch, data, save, features, pending, edit }) {
-  const [chosen, setChosen] = useDraftState("sources:" + batch.id, []);
+  const [chosen, setChosen] = useState([]),
+    [kind, setKind] = useState("daily"),
+    [count, setCount] = useState(20);
   const materials = data.content.filter(
     (c) =>
       c.published &&
       c.course_id === batch.course_id &&
       (!c.batch_id || c.batch_id === batch.id) &&
-      ["notes", "slides", "guide", "lab", "recording"].includes(c.kind),
+      ["notes", "slides", "guide", "lab", "recording", "image"].includes(
+        c.kind,
+      ),
   );
   return (
     <>
-      <DraftForm
+      <section className="panel">
+        <div className="row between wrap gap">
+          <div>
+            <h3>Automated 9:00 AM IST Daily & Sunday Weekly Schedule</h3>
+            <p>
+              <b>Mon–Sat 9:00 AM IST:</b> Generates a 20–40+ question Daily Test
+              (including YAML/CLI/code tasks) if class materials were taught the
+              previous night (9:30 PM – 10:30 PM IST). Skips automatically if no
+              class was held.
+              <br />
+              <b>Sunday 9:00 AM IST:</b> Generates a 25–50+ question Weekly Test
+              covering all Monday–Saturday topics (no Daily Test on Sunday).
+            </p>
+          </div>
+          <div className="row gap wrap">
+            <button
+              className="button secondary"
+              type="button"
+              disabled={pending}
+              onClick={() =>
+                save("admin/trigger-scheduled-tests", {
+                  batch_id: batch.id,
+                  mode: "daily",
+                })
+              }
+            >
+              Run 9 AM Daily Test Check
+            </button>
+            <button
+              className="button secondary"
+              type="button"
+              disabled={pending}
+              onClick={() =>
+                save("admin/trigger-scheduled-tests", {
+                  batch_id: batch.id,
+                  mode: "weekly",
+                })
+              }
+            >
+              Run Sunday Weekly Test Check
+            </button>
+          </div>
+        </div>
+      </section>
+      <form
         className="panel form"
         onSubmit={(e) => {
           e.preventDefault();
@@ -848,11 +930,11 @@ function Studio({ batch, data, save, features, pending, edit }) {
           });
         }}
       >
-        <h3>Generate from approved classes</h3>
+        <h3>Generate custom assessment from approved classes</h3>
         <p>
-          DeepSeek creates a draft from readable approved materials. Recordings
-          require a transcript or substantive class notes. Review questions and
-          answers before publishing.
+          DeepSeek creates a comprehensive assessment from readable approved
+          materials (notes, slides, resource creation guides, labs, diagrams,
+          and transcripts), including practical YAML, CLI, and scripting tasks.
         </p>
         {!features.engine_ready && (
           <p className="info-strip">
@@ -863,19 +945,29 @@ function Studio({ batch, data, save, features, pending, edit }) {
         <div className="two-col">
           <Field label="Assessment title" name="title" required />
           <Field label="Assessment type">
-            <select name="kind">
-              <option value="daily">Daily</option>
-              <option value="weekly">Weekly</option>
-              <option value="topic">Completed topic</option>
+            <select
+              name="kind"
+              value={kind}
+              onChange={(e) => {
+                const nextKind = e.target.value;
+                setKind(nextKind);
+                if (nextKind === "weekly" && count < 25) setCount(25);
+                else if (nextKind === "daily" && count < 20) setCount(20);
+              }}
+            >
+              <option value="daily">Daily (20+ recommended)</option>
+              <option value="weekly">Weekly (25+ recommended)</option>
+              <option value="monthly">Monthly</option>
             </select>
           </Field>
           <Field
-            label="Question count"
+            label="Question count (min 20 for daily, 25 for weekly)"
             name="count"
             type="number"
             min="1"
             max="100"
-            defaultValue="10"
+            value={count}
+            onChange={(e) => setCount(Number(e.target.value))}
           />
           <Field
             label="Time limit (minutes)"
@@ -883,14 +975,17 @@ function Studio({ batch, data, save, features, pending, edit }) {
             type="number"
             min="1"
             max="180"
-            defaultValue="30"
+            defaultValue="45"
           />
         </div>
         <p>
-          <b>100 marks · one attempt · 70 marks to pass</b>
+          <b>
+            100 marks · one attempt · 70 marks to pass · DeepSeek Diagnostic
+            Coach enabled
+          </b>
         </p>
         <fieldset>
-          <legend>Question types</legend>
+          <legend>Question types (all types + YAML/CLI code enabled)</legend>
           <div className="question-type-picker">
             {Object.entries(QUESTION_TYPES).map(([type, label]) => (
               <label className="row gap" key={type}>
@@ -900,9 +995,14 @@ function Studio({ batch, data, save, features, pending, edit }) {
                   value={type}
                   defaultChecked={[
                     "mcq",
+                    "multi_select",
+                    "true_false",
+                    "fill_blank",
                     "short_answer",
                     "scenario",
                     "code",
+                    "matching",
+                    "ordering",
                   ].includes(type)}
                 />
                 {label}
@@ -914,6 +1014,25 @@ function Studio({ batch, data, save, features, pending, edit }) {
             type.
           </small>
         </fieldset>
+        <div className="row between wrap">
+          <b>Select approved class materials ({chosen.length} selected)</b>
+          <div className="row gap">
+            <button
+              type="button"
+              className="text-btn"
+              onClick={() => setChosen(materials.slice(0, 30).map((c) => c.id))}
+            >
+              Select all ({Math.min(30, materials.length)})
+            </button>
+            <button
+              type="button"
+              className="text-btn"
+              onClick={() => setChosen([])}
+            >
+              Clear
+            </button>
+          </div>
+        </div>
         <div className="material-picker">
           {materials.map((c) => (
             <label className="row gap" key={c.id}>
@@ -929,7 +1048,7 @@ function Studio({ batch, data, save, features, pending, edit }) {
                 }
               />
               <span>
-                {c.title} <small>({c.kind})</small>
+                Topic {c.topic_order}: {c.title} <small>({c.kind})</small>
               </span>
             </label>
           ))}
@@ -940,7 +1059,7 @@ function Studio({ batch, data, save, features, pending, edit }) {
         >
           Generate draft assessment
         </button>
-      </DraftForm>
+      </form>
       <section className="panel">
         <h3>Generation and evaluation jobs</h3>
         {features.jobs
@@ -983,26 +1102,68 @@ function Studio({ batch, data, save, features, pending, edit }) {
     </>
   );
 }
-function Access({ batch, data, features, save, pending }) {
-  const [group, setGroup] = useDraftState("selected-access-group", "");
+
+function Access({ batch, data, user, features, save, pending }) {
+  const [group, setGroup] = useState(""),
+    [csvText, setCsvText] = useState(""),
+    [defaultFee, setDefaultFee] = useState(0);
   const g = features.groups.find((g) => g.id === group);
+  const isHeadAdmin = !user || user.role === "admin";
   return (
     <>
       <section className="panel">
-        <h3>Authentication readiness</h3>
+        <h3>Authentication & Domain Readiness</h3>
         <p>
           Google sign-in:{" "}
           {features.google_ready ? "configured" : "awaiting OAuth credentials"}{" "}
-          · Current mode: {features.auth_mode}
+          · Mode: {features.auth_mode}
         </p>
         <p>
-          Google Cloud IAM protects cloud resources. Portal access uses verified
-          Google email, institute groups and explicit enrollments. Google Group
-          synchronization requires your Workspace administrator’s setup.
+          Custom Domain (<code>student-portal.arksglobalasia.cloud</code>) &
+          Azure Static Web Apps (
+          <code>yellow-tree-0ceb4a400.3.azurestaticapps.net</code>) are
+          authorized for both Google OAuth and Staff Password Sign-in.
         </p>
       </section>
-      <DraftForm
-        draftKey={"access-group:" + group}
+      <form
+        className="panel form"
+        onSubmit={async (e) => {
+          e.preventDefault();
+          const res = await save("admin/bulk-invite", {
+            batch_id: batch.id,
+            fee: Math.round(Number(defaultFee || 0) * 100),
+            csv: csvText,
+          });
+          if (res) setCsvText("");
+        }}
+      >
+        <h3>Bulk CSV / Multi-Line Student Onboarding ({batch.name})</h3>
+        <p>
+          Paste one student per line as <code>email,name,fee_in_paise</code> or
+          simply one email address per line. Already-registered students are
+          enrolled immediately.
+        </p>
+        <Field
+          label="Default agreed fee (major currency units, e.g. INR)"
+          type="number"
+          min="0"
+          value={defaultFee}
+          onChange={(e) => setDefaultFee(e.target.value)}
+        />
+        <Field label="Student emails or CSV rows">
+          <textarea
+            rows={5}
+            required
+            value={csvText}
+            onChange={(e) => setCsvText(e.target.value)}
+            placeholder={"student1@example.com,Aarav Sharma\nstudent2@example.com,Diya Patel"}
+          />
+        </Field>
+        <button className="button" disabled={pending}>
+          Bulk invite & enroll students
+        </button>
+      </form>
+      <form
         key={group}
         className="panel form"
         onSubmit={(e) => {
@@ -1057,60 +1218,75 @@ function Access({ batch, data, features, save, pending }) {
         <button className="button" disabled={pending}>
           Save group & enroll members
         </button>
-      </DraftForm>
-      <DraftForm
-        className="panel form"
-        onSubmit={async (e) => {
-          e.preventDefault();
-          const form = e.currentTarget;
-          const r = await save(
-            "admin/password",
-            Object.fromEntries(new FormData(form)),
-          );
-          if (r) form.reset();
-        }}
-      >
-        <h3>Create or reset administrator login</h3>
-        <p>
-          Passwords are salted and hashed. Resetting a password signs out that
-          administrator’s existing sessions.
-        </p>
-        <Field label="Admin name" name="name" required />
-        <Field label="Admin email" name="email" type="email" required />
-        <Field
-          label="New password (at least 14 characters)"
-          name="password"
-          type="password"
-          minLength="14"
-          autoComplete="new-password"
-          required
-        />
-        <button className="button" disabled={pending}>
-          Save administrator credentials
-        </button>
-      </DraftForm>
-      <section className="panel">
-        <h3>Account access</h3>
-        {data.users.map((u) => (
-          <div className="session-row" key={u.id}>
-            <div className="grow">
-              <b>{u.name}</b>
-              <p>
-                {u.email} · {u.role}
-              </p>
+      </form>
+      {isHeadAdmin && (
+        <>
+          <form
+            className="panel form"
+            onSubmit={async (e) => {
+              e.preventDefault();
+              const form = e.currentTarget;
+              const r = await save(
+                "admin/password",
+                Object.fromEntries(new FormData(form)),
+              );
+              if (r) form.reset();
+            }}
+          >
+            <h3>Create or reset staff login (Head / Admin or Trainer)</h3>
+            <p>
+              Passwords are salted and hashed with PBKDF2-SHA256. Both Head
+              Administrators and Trainers can sign in with email & password or
+              Google OAuth.
+            </p>
+            <div className="two-col">
+              <Field label="Staff name" name="name" required />
+              <Field label="Staff email" name="email" type="email" required />
+              <Field label="Role">
+                <select name="role" defaultValue="admin">
+                  <option value="admin">Head / Administrator (Full Access)</option>
+                  <option value="trainer">
+                    Trainer / Instructor (Teaching & Content Access)
+                  </option>
+                </select>
+              </Field>
+              <Field
+                label="New password (at least 14 characters)"
+                name="password"
+                type="password"
+                minLength="14"
+                autoComplete="new-password"
+                required
+              />
             </div>
-            <button
-              className="button secondary"
-              disabled={pending}
-              onClick={() =>
-                save("admin/access", { user_id: u.id, active: !u.active })
-              }
-            >
-              {u.active ? "Disable access" : "Enable access"}
+            <button className="button" disabled={pending}>
+              Save staff credentials
             </button>
-          </div>
-        ))}
-      </section>
+          </form>
+          <section className="panel">
+            <h3>Account access</h3>
+            {data.users.map((u) => (
+              <div className="session-row" key={u.id}>
+                <div className="grow">
+                  <b>{u.name}</b>
+                  <p>
+                    {u.email} · {u.role}
+                  </p>
+                </div>
+                <button
+                  className="button secondary"
+                  disabled={pending}
+                  onClick={() =>
+                    save("admin/access", { user_id: u.id, active: !u.active })
+                  }
+                >
+                  {u.active ? "Disable access" : "Enable access"}
+                </button>
+              </div>
+            ))}
+          </section>
+        </>
+      )}
     </>
   );
 }

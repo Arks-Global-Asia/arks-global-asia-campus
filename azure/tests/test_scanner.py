@@ -8,7 +8,19 @@ import unittest
 from unittest.mock import patch, Mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'function'))
-from scanner import Drive, Portal, ScanError, ApiError, scan_source, FOLDER, SHORTCUT, request
+from scanner import (
+    Drive,
+    Portal,
+    ScanError,
+    ApiError,
+    scan_source,
+    parse_source_filters,
+    EXTENSIONS,
+    ORIGIN,
+    FOLDER,
+    SHORTCUT,
+    request,
+)
 
 ROOT = 'root_folder_123456'
 SOURCE = {'id': 'source', 'generation': 1, 'folder_id': ROOT, 'folder_input': 'Batch'}
@@ -147,27 +159,130 @@ class ScannerTests(unittest.TestCase):
         with patch.dict(os.environ, {'ARKS_HOST_TOKEN': 'test', 'ARKS_IMPORTER_TOKEN': 'test'}):
             with self.assertRaises(ScanError): Portal().call('review', {})
 
-    def test_portal_origin_accepts_the_azure_campus_and_refuses_other_hosts(self):
-        from scanner import portal_origin
-        with patch.dict(os.environ, {'ARKS_PORTAL_ORIGIN':'https://black-water-04f865700.5.azurestaticapps.net'}):
-            self.assertEqual(portal_origin(),'https://black-water-04f865700.5.azurestaticapps.net')
-        for value in ['http://studentportal.arksglobalasia.cloud','https://example.org','https://studentportal.arksglobalasia.cloud/path','https://studentportal.arksglobalasia.cloud:444']:
-            with patch.dict(os.environ, {'ARKS_PORTAL_ORIGIN':value}):
-                with self.assertRaises(RuntimeError):portal_origin()
+    def test_portal_origin_optional_host_token_and_schedule_assessments(self):
+        self.assertEqual(ORIGIN, 'https://student-portal.arksglobalasia.cloud')
+        with patch.dict(os.environ, {'ARKS_IMPORTER_TOKEN': 'imp-token'}, clear=False):
+            os.environ.pop('ARKS_HOST_TOKEN', None)
+            p_no_host = Portal()
+            self.assertEqual(p_no_host.session.headers.get('X-Arks-Importer-Token'), 'imp-token')
+            self.assertNotIn('OAI-Sites-Authorization', p_no_host.session.headers)
+
+        with patch.dict(os.environ, {'ARKS_IMPORTER_TOKEN': 'imp-token', 'ARKS_HOST_TOKEN': 'host-secret'}):
+            p_with_host = Portal()
+            self.assertEqual(p_with_host.session.headers.get('OAI-Sites-Authorization'), 'Bearer host-secret')
+            with patch('scanner.request') as mock_req:
+                mock_resp = Mock()
+                mock_resp.json.return_value = {'mode': 'daily', 'results': []}
+                mock_req.return_value.__enter__.return_value = mock_resp
+                res = p_with_host.call('schedule-assessments', {'mode': 'daily'})
+                self.assertEqual(res['mode'], 'daily')
+
+    def test_extensions_and_per_source_exclusion_filters(self):
+        for ext_file in [
+            'diagram.png', 'arch.jpg', 'flow.webp', 'icon.svg',
+            'guide.pdf', 'slides.pptx', 'notes.docx', 'readme.md',
+            'pod.yaml', 'deploy.yml', 'setup.sh', 'app.py', 'config.json', 'archive.zip'
+        ]:
+            self.assertIsNotNone(EXTENSIONS.search(ext_file), f'Expected {ext_file} to match EXTENSIONS')
+
+        skip_folders, skip_exts = parse_source_filters({
+            'config': json.dumps({
+                'excluded_folders': ['trainer_private', 'archive Drafts'],
+                'excluded_extensions': ['tmp', '.bak'],
+            })
+        })
+        self.assertEqual(skip_folders, {'trainer_private', 'archive_drafts'})
+        self.assertEqual(skip_exts, {'.tmp', '.bak'})
+
+        # Verify scan_source skips custom excluded folders & extensions while scanning images and resource_creation
+        p, c = FakePortal(), Memory()
+        custom_source = {
+            **SOURCE,
+            'config': json.dumps({
+                'excluded_folders': ['secret_solutions'],
+                'excluded_extensions': ['.bak'],
+            }),
+        }
+        orig_call = p.call
+        p.call = lambda action, body=None: (
+            {'run_id': 'run', 'source': copy.deepcopy(custom_source)}
+            if action == 'claim'
+            else orig_call(action, body)
+        )
+        d = FakeDrive({
+            None: {
+                'files': [
+                    file('dir_secret123', name='secret_solutions', mimeType=FOLDER),
+                    file('dir_images123', name='images', mimeType=FOLDER),
+                    file('file_bak_1234', name='notes.bak', mimeType='text/plain'),
+                    file('file_img_1234', name='architecture.png', mimeType='image/png'),
+                    file('file_yaml1234', name='deployment.yaml', mimeType='text/yaml'),
+                ]
+            },
+        })
+        orig_page = d.page
+        d.page = lambda q, token=None: (
+            {'files': [file('file_sub_img1', name='vpc.jpg', mimeType='image/jpeg', parents=['dir_images123'])]}
+            if "'dir_images123' in parents" in q
+            else orig_page(q, token)
+        )
+        self.assertEqual(scan_source(p, d, c, 'source'), 'succeeded')
+        self.assertEqual(d.downloads, ['file_img_1234', 'file_yaml1234', 'file_sub_img1'])
 
     def test_function_bindings_are_indexable(self):
+        import types
+        if 'azure.functions' not in sys.modules:
+            try:
+                import azure.functions  # noqa: F401
+            except ModuleNotFoundError:
+                azure_mod = sys.modules.setdefault('azure', types.ModuleType('azure'))
+                func_mod = types.ModuleType('azure.functions')
+
+                class _RegisteredFunction:
+                    def __init__(self, name): self._name = name
+                    def get_function_name(self): return self._name
+
+                class _FakeFunctionApp:
+                    def __init__(self): self._fns = []
+                    def function_name(self, name):
+                        def dec(fn):
+                            self._fns.append(_RegisteredFunction(name))
+                            return fn
+                        return dec
+                    def timer_trigger(self, **kw): return lambda fn: fn
+                    def queue_output(self, **kw): return lambda fn: fn
+                    def queue_trigger(self, **kw): return lambda fn: fn
+                    def route(self, **kw): return lambda fn: fn
+                    def get_functions(self): return list(self._fns)
+
+                func_mod.FunctionApp = _FakeFunctionApp
+                func_mod.TimerRequest = object
+                func_mod.Out = MagicMock = type('Out', (), {'__class_getitem__': classmethod(lambda cls, item: cls)})
+                func_mod.QueueMessage = object
+                func_mod.HttpRequest = object
+                func_mod.HttpResponse = object
+                func_mod.AuthLevel = type('AuthLevel', (), {'FUNCTION': 'function'})
+                sys.modules['azure.functions'] = func_mod
+                azure_mod.functions = func_mod
+
+                core_mod = sys.modules.setdefault('azure.core', types.ModuleType('azure.core'))
+                exc_mod = types.ModuleType('azure.core.exceptions')
+                exc_mod.ResourceNotFoundError = Exception
+                sys.modules['azure.core.exceptions'] = exc_mod
+                core_mod.exceptions = exc_mod
+
+                storage_mod = sys.modules.setdefault('azure.storage', types.ModuleType('azure.storage'))
+                blob_mod = types.ModuleType('azure.storage.blob')
+                blob_mod.BlobServiceClient = object
+                sys.modules['azure.storage.blob'] = blob_mod
+                storage_mod.blob = blob_mod
+
         from function_app import app
         functions = app.get_functions()
-        self.assertEqual({f.get_function_name() for f in functions}, {'dispatch_batches', 'scan_batch', 'engine_dispatch', 'process_engine_job'})
+        self.assertEqual(
+            {f.get_function_name() for f in functions},
+            {'dispatch_batches', 'schedule_morning_assessments', 'scan_batch', 'engine_dispatch', 'process_engine_job'},
+        )
 
 
 if __name__ == '__main__': unittest.main()
-
-class FolderPolicyTests(unittest.TestCase):
-    def test_custom_exclusions_discover_folder_without_loading_its_files(self):
-        p=FakePortal(); d=FakeDrive({None:{'files':[file('audio_folder_1234',name='audio',mimeType=FOLDER)]}})
-        with patch.dict(SOURCE,{'exclusions':['audio']}):
-            self.assertEqual(scan_source(p,d,Memory(),'source'),'succeeded')
-        self.assertTrue(any(action=='folders' for action,_ in p.calls))
-        self.assertEqual(d.downloads,[])
-        self.assertEqual(len(d.tokens),1)

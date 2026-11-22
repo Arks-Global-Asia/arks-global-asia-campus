@@ -1,28 +1,24 @@
 """Deterministic Drive reader. No model calls, publication, or student mutations."""
 import hashlib
 import io
+import json
 import os
 import re
 import time
 from collections import deque
 import requests
 
-def portal_origin():
-    from urllib.parse import urlparse
-    value = (os.environ.get('ARKS_PORTAL_ORIGIN') or 'https://arks-global-asia-institutes.majesticanchovy2.chatgpt.site').rstrip('/')
-    parsed = urlparse(value)
-    if parsed.scheme != 'https' or parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment or parsed.port not in (None,443) or not parsed.hostname or not parsed.hostname.endswith(('.azurestaticapps.net', '.arksglobalasia.cloud', '.chatgpt.site')):
-        raise RuntimeError('Invalid configured portal origin; refusing credential forwarding.')
-    return value
-
-ORIGIN = portal_origin()
+ORIGIN = os.environ.get("PORTAL_ORIGIN", "https://student-portal.arksglobalasia.cloud").rstrip("/")
 DRIVE = "https://www.googleapis.com/drive/v3/files"
 FOLDER = "application/vnd.google-apps.folder"
 SHORTCUT = "application/vnd.google-apps.shortcut"
 FIELDS = "id,name,mimeType,modifiedTime,version,size,parents,md5Checksum,trashed"
 MAX_BYTES = 20 * 1024 * 1024
-EXTENSIONS = re.compile(r"\.(pdf|pptx|docx|txt|md|png|jpg|jpeg|webp|zip|xlsx|csv)$", re.I)
-SKIP_FOLDERS = {"student_submissions", "submissions", "lab_answers"}
+EXTENSIONS = re.compile(
+    r"\.(pdf|pptx|ppt|docx|doc|txt|md|png|jpg|jpeg|webp|svg|zip|xlsx|csv|yaml|yml|sh|py|json)$",
+    re.I,
+)
+DEFAULT_SKIP_FOLDERS = {"student_submissions", "lab_answers", "do_not_share", "trainer_only"}
 
 
 class ScanError(Exception):
@@ -58,30 +54,85 @@ def request(session, method, url, *, retry=False, **kwargs):
 class Portal:
     def __init__(self):
         self.session = requests.Session()
-        self.session.headers.update({
-            "OAI-Sites-Authorization": "Bearer " + os.environ["ARKS_HOST_TOKEN"],
+        headers = {
             "X-Arks-Importer-Token": os.environ["ARKS_IMPORTER_TOKEN"],
-        })
+        }
+        host_token = os.environ.get("ARKS_HOST_TOKEN", "").strip()
+        if host_token:
+            headers["OAI-Sites-Authorization"] = "Bearer " + host_token
+        self.session.headers.update(headers)
 
     def call(self, action, body=None):
-        if action not in {"sources", "claim", "resolve", "ingest", "finish", "jobs", "jobs/claim", "jobs/finish", "groups", "groups/snapshot", "folders"}:
+        allowed = {
+            "sources",
+            "claim",
+            "resolve",
+            "ingest",
+            "finish",
+            "jobs",
+            "jobs/claim",
+            "jobs/finish",
+            "groups",
+            "groups/snapshot",
+            "schedule-assessments",
+        }
+        if action not in allowed:
             raise ScanError("Operation is not permitted for this worker.")
         # Claim must not be retried blindly: a lost response can mean a live lease.
-        with request(self.session, "GET" if body is None else "POST",
-                     ORIGIN + "/api/automation/" + action,
-                     json=body, retry=action in {"sources", "resolve", "ingest"}) as r:
+        with request(
+            self.session,
+            "GET" if body is None else "POST",
+            ORIGIN + "/api/automation/" + action,
+            json=body,
+            retry=action in {"sources", "resolve", "ingest"},
+        ) as r:
             return r.json()
 
     def upload(self, run_id, item_id, file, data):
-        with request(self.session, "POST", ORIGIN + "/api/automation/upload",
-                     data={"run_id": run_id, "item_id": item_id},
-                     files={"file": (file["name"], data, file["mimeType"])}) as r:
+        with request(
+            self.session,
+            "POST",
+            ORIGIN + "/api/automation/upload",
+            data={"run_id": run_id, "item_id": item_id},
+            files={"file": (file["name"], data, file["mimeType"])},
+        ) as r:
             return r.json()
 
 
 def revision(file):
     # Match the existing importer when it used modifiedTime; version is fallback.
     return file.get("modifiedTime") or str(file["version"])
+
+
+def parse_source_filters(source):
+    raw_cfg = source.get("config") or "{}"
+    if isinstance(raw_cfg, str):
+        try:
+            cfg = json.loads(raw_cfg)
+        except ValueError:
+            cfg = {}
+    elif isinstance(raw_cfg, dict):
+        cfg = raw_cfg
+    else:
+        cfg = {}
+
+    raw_folders = cfg.get("excluded_folders")
+    if isinstance(raw_folders, list):
+        skip_folders = {str(x).strip().lower().replace(" ", "_") for x in raw_folders if str(x).strip()}
+    else:
+        skip_folders = set(DEFAULT_SKIP_FOLDERS)
+
+    raw_exts = cfg.get("excluded_extensions")
+    if isinstance(raw_exts, list):
+        skip_exts = {
+            ("." + str(x).strip().lower().lstrip("."))
+            for x in raw_exts
+            if str(x).strip()
+        }
+    else:
+        skip_exts = set()
+
+    return skip_folders, skip_exts
 
 
 class Drive:
@@ -91,13 +142,23 @@ class Drive:
     def get(self, file_id):
         if not re.fullmatch(r"[\w-]{10,200}", file_id):
             raise ScanError("Invalid Drive file ID.")
-        with request(self.session, "GET", DRIVE + "/" + file_id, retry=True,
-                     params={"fields": FIELDS, "supportsAllDrives": "true"}) as r:
+        with request(
+            self.session,
+            "GET",
+            DRIVE + "/" + file_id,
+            retry=True,
+            params={"fields": FIELDS, "supportsAllDrives": "true"},
+        ) as r:
             return r.json()
 
     def page(self, query, token=None):
-        params = {"q": query, "fields": "nextPageToken,incompleteSearch,files(" + FIELDS + ")",
-                  "pageSize": 50, "supportsAllDrives": "true", "includeItemsFromAllDrives": "true"}
+        params = {
+            "q": query,
+            "fields": "nextPageToken,incompleteSearch,files(" + FIELDS + ")",
+            "pageSize": 50,
+            "supportsAllDrives": "true",
+            "includeItemsFromAllDrives": "true",
+        }
         if token:
             params["pageToken"] = token
         with request(self.session, "GET", DRIVE, params=params, retry=True) as r:
@@ -127,8 +188,14 @@ class Drive:
 
     def copy(self, file):
         data = io.BytesIO()
-        with request(self.session, "GET", DRIVE + "/" + file["id"], retry=True,
-                     params={"alt": "media", "supportsAllDrives": "true"}, stream=True) as r:
+        with request(
+            self.session,
+            "GET",
+            DRIVE + "/" + file["id"],
+            retry=True,
+            params={"alt": "media", "supportsAllDrives": "true"},
+            stream=True,
+        ) as r:
             for chunk in r.iter_content(65536):
                 data.write(chunk)
                 if data.tell() > MAX_BYTES:
@@ -158,6 +225,7 @@ def scan_source(portal, drive, checkpoints, source_id, *, max_pages=200, seconds
             return "skipped"
         raise
     run_id, source = claim["run_id"], claim["source"]
+    skip_folders, skip_exts = parse_source_filters(source)
     count, linked, copied = 0, 0, 0
     deadline = time.monotonic() + seconds
     status = "failed"
@@ -167,9 +235,11 @@ def scan_source(portal, drive, checkpoints, source_id, *, max_pages=200, seconds
         portal.call("resolve", {"run_id": run_id, "folder_id": root["id"], "folder_name": root["name"]})
         key = str(source["generation"]) + ":" + root["id"]
         saved = checkpoints.load(source_id)
-        pending = deque(saved["pending"] if saved and saved.get("key") == key else [
-            {"id": root["id"], "path": "batch", "ancestors": [root["id"]], "token": None}
-        ])
+        pending = deque(
+            saved["pending"]
+            if saved and saved.get("key") == key
+            else [{"id": root["id"], "path": "batch", "ancestors": [root["id"]], "token": None}]
+        )
         for _ in range(max_pages):
             if not pending or time.monotonic() >= deadline:
                 break
@@ -191,29 +261,47 @@ def scan_source(portal, drive, checkpoints, source_id, *, max_pages=200, seconds
                 if current["id"] not in file.get("parents", []):
                     raise ScanError("Drive returned a file outside the enumerated parent.")
                 if file["mimeType"] == FOLDER:
-                    path = current['path'] + '/' + file['name']
-                    portal.call('folders', {'run_id': run_id, 'folders': [{'id':file['id'], 'path':path}]})
-                    exclusions = source.get('exclusions', [])
-                    relative = path.removeprefix('batch/').lower()
-                    excluded = any(value == file['id'] or (value.strip('/').lower() in relative.split('/') if '/' not in value else relative == value.strip('/').lower() or relative.startswith(value.strip('/').lower() + '/')) for value in exclusions)
-                    if file["name"].lower().replace(" ", "_") not in SKIP_FOLDERS and not excluded:
-                        folders.append({"id": file["id"], "path": path,
-                                        "ancestors": [file["id"]] + current["ancestors"], "token": None})
+                    norm_folder = file["name"].strip().lower().replace(" ", "_")
+                    if norm_folder not in skip_folders:
+                        folders.append(
+                            {
+                                "id": file["id"],
+                                "path": current["path"] + "/" + file["name"],
+                                "ancestors": [file["id"]] + current["ancestors"],
+                                "token": None,
+                            }
+                        )
                 elif file["mimeType"] != SHORTCUT:  # Never follow a shortcut outside the batch.
+                    lower_name = file["name"].lower()
+                    if any(lower_name.endswith(ext) for ext in skip_exts):
+                        continue
                     files.append(file)
             if files:
-                items = [{"drive_file_id": f["id"], "revision": revision(f), "name": f["name"],
-                          "source_path": current["path"], "mime": f["mimeType"], "size": int(f.get("size", 0)),
-                          "url": "https://drive.google.com/file/d/" + f["id"] + "/view",
-                          "ancestor_ids": current["ancestors"]} for f in files]
+                items = [
+                    {
+                        "drive_file_id": f["id"],
+                        "revision": revision(f),
+                        "modified_time": f.get("modifiedTime", ""),
+                        "name": f["name"],
+                        "source_path": current["path"],
+                        "mime": f["mimeType"],
+                        "size": int(f.get("size", 0)),
+                        "url": "https://drive.google.com/file/d/" + f["id"] + "/view",
+                        "ancestor_ids": current["ancestors"],
+                    }
+                    for f in files
+                ]
                 result = portal.call("ingest", {"run_id": run_id, "items": items})["items"]
                 if len(result) != len(files):
                     raise ScanError("Incomplete import response; retry this page.")
                 for file, item in zip(files, result):
                     if item["status"] != "pending" or item.get("file_id"):
                         continue
-                    if (EXTENSIONS.search(file["name"]) and 0 < int(file.get("size", 0)) <= MAX_BYTES
-                            and not file["mimeType"].startswith(("application/vnd.google-apps.", "video/", "audio/"))):
+                    if (
+                        EXTENSIONS.search(file["name"])
+                        and 0 < int(file.get("size", 0)) <= MAX_BYTES
+                        and not file["mimeType"].startswith(("application/vnd.google-apps.", "video/", "audio/"))
+                    ):
                         portal.upload(run_id, item["id"], file, drive.copy(file))
                         copied += 1
                     else:

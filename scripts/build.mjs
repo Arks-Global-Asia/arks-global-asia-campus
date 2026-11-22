@@ -21,8 +21,6 @@ await build({
   outfile: "dist/server/index.js",
   define: { __ASSETS__: JSON.stringify(assets) },
 });
-await fs.mkdir("dist/.openai", { recursive: true });
-await fs.copyFile(".openai/hosting.json", "dist/.openai/hosting.json");
 await fs.cp("drizzle", "dist/drizzle", { recursive: true });
 console.log(
   "Built Worker with " + Object.keys(assets).length + " embedded assets.",

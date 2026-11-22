@@ -1,4 +1,3 @@
-import { learningRoutes, planAssessments } from "./learning.js";
 import {
   validQuestion,
   normalizeQuestions,
@@ -7,15 +6,16 @@ import {
   written,
   objectiveCorrect,
 } from "../shared/assessment.js";
-import { member } from "./common.js";
+import { member, admin, staff, isStaff, verifyOrigin } from "./common.js";
 import { authRoutes, sessionUser } from "./auth.js";
-import { featureRoutes, queueJob, wakeEngine } from "./features.js";
+import { featureRoutes, queueJob, wakeEngine, sanitizeSummary } from "./features.js";
 import {
   serviceAutomation,
   adminAutomation,
   saveSource,
 } from "./automation.js";
 import { seed } from "./seed.js";
+
 export class HttpError extends Error {
   constructor(status, message) {
     super(message);
@@ -76,9 +76,6 @@ export function grade(questions, answers) {
 export function publicQuestions(qs) {
   return qs.map(publicQuestion);
 }
-const admin = (u) => {
-  if (u.role !== "admin") fail(403, "Administrator access required.");
-};
 async function log(db, u, action, entity) {
   await run(
     db,
@@ -97,17 +94,15 @@ async function visibleContent(db, u, cid, batch) {
     !c ||
     c.course_id !== b.course_id ||
     (c.batch_id && c.batch_id !== batch) ||
-    (!c.published && u.role !== "admin")
+    (!c.published && !isStaff(u))
   )
     fail(404, "Resource not found.");
   return c;
 }
 async function identity(req, db, env) {
-  if (!["sites", "google", "entra"].includes(env.AUTH_MODE || "sites"))
-    fail(503, "Authentication mode is not supported by this deployment.");
   const signedIn = await sessionUser(req, env);
   if (signedIn) return signedIn;
-  if (["google", "entra"].includes(env.AUTH_MODE))
+  if (env.AUTH_MODE === "google" || env.LOCAL_DEV_OWNER !== "true")
     fail(401, "Sign in to access your campus.");
   const uid = req.headers.get("oai-authenticated-user-id"),
     email = req.headers.get("oai-authenticated-user-email")?.toLowerCase();
@@ -137,7 +132,10 @@ async function identity(req, db, env) {
     owner.value === uid ? "admin" : "student",
     now(),
   );
-  let u = await one(db, "SELECT * FROM users WHERE id=?", uid);
+  let u =
+    (await one(db, "SELECT * FROM users WHERE id=?", uid)) ||
+    (await one(db, "SELECT * FROM users WHERE email=?", email));
+  const resolvedId = u.id;
   const invites = await rows(
     db,
     "SELECT * FROM invitations WHERE email=?",
@@ -148,16 +146,18 @@ async function identity(req, db, env) {
       db,
       "INSERT OR IGNORE INTO enrollments (id,user_id,batch_id,fee,created) VALUES (?,?,?,?,?)",
       id(),
-      uid,
+      resolvedId,
       invite.batch_id,
       invite.fee,
       now(),
     );
     if (invite.role === "admin")
-      await run(db, "UPDATE users SET role='admin' WHERE id=?", uid);
+      await run(db, "UPDATE users SET role='admin' WHERE id=?", resolvedId);
+    else if (invite.role === "trainer" && u.role !== "admin")
+      await run(db, "UPDATE users SET role='trainer' WHERE id=?", resolvedId);
   }
-  u = await one(db, "SELECT * FROM users WHERE id=?", uid);
-  if (!u.active) fail(403, "Your account is disabled.");
+  u = await one(db, "SELECT * FROM users WHERE id=?", resolvedId);
+  if (!u || !u.active) fail(403, "Your account is disabled.");
   return u;
 }
 export async function api(req, env) {
@@ -181,11 +181,7 @@ async function handle(req, env) {
   const p = new URL(req.url).pathname,
     db = env.DB;
   if (!db) fail(503, "Database is not configured.");
-  if (req.method !== "GET" && req.method !== "HEAD") {
-    const origin = req.headers.get("Origin");
-    if (origin && origin !== new URL(req.url).origin)
-      fail(403, "Invalid request origin.");
-  }
+  verifyOrigin(req, env);
   if (p.startsWith("/api/automation/")) return serviceAutomation(req, env);
   if (p.startsWith("/api/auth/")) {
     const response = await authRoutes(req, env);
@@ -193,15 +189,13 @@ async function handle(req, env) {
     fail(404, "Authentication endpoint not found.");
   }
   const u = await identity(req, db, env);
-  const learning = await learningRoutes(req, env, u);
-  if (learning) return learning;
   const enhanced = await featureRoutes(req, env, u);
   if (enhanced) return enhanced;
   if (p.startsWith("/api/admin/automation/"))
     return adminAutomation(req, env, u);
   if (p === "/api/bootstrap" && req.method === "GET") {
     if (
-      u.role === "admin" &&
+      isStaff(u) &&
       !(await one(db, "SELECT value FROM settings WHERE key='seeded'"))
     ) {
       await seed(db);
@@ -219,23 +213,21 @@ async function handle(req, env) {
         now(),
       );
     }
-    let batches =
-      u.role === "admin"
-        ? await rows(db, "SELECT * FROM batches ORDER BY start_date DESC")
-        : await rows(
-            db,
-            "SELECT b.* FROM batches b JOIN enrollments e ON e.batch_id=b.id WHERE e.user_id=? ORDER BY b.start_date DESC",
-            u.id,
-          );
-    const courses =
-      u.role === "admin"
-        ? await rows(db, "SELECT * FROM courses")
-        : await rows(
-            db,
-            "SELECT DISTINCT c.* FROM courses c JOIN batches b ON b.course_id=c.id JOIN enrollments e ON e.batch_id=b.id WHERE e.user_id=?",
-            u.id,
-          );
-    if (u.role !== "admin") {
+    let batches = isStaff(u)
+      ? await rows(db, "SELECT * FROM batches ORDER BY start_date DESC")
+      : await rows(
+          db,
+          "SELECT b.* FROM batches b JOIN enrollments e ON e.batch_id=b.id WHERE e.user_id=? ORDER BY b.start_date DESC",
+          u.id,
+        );
+    const courses = isStaff(u)
+      ? await rows(db, "SELECT * FROM courses")
+      : await rows(
+          db,
+          "SELECT DISTINCT c.* FROM courses c JOIN batches b ON b.course_id=c.id JOIN enrollments e ON e.batch_id=b.id WHERE e.user_id=?",
+          u.id,
+        );
+    if (!isStaff(u)) {
       const permitted = [];
       for (const b of batches) {
         try {
@@ -301,7 +293,7 @@ async function handle(req, env) {
       ),
       attempts: await rows(
         db,
-        "SELECT id,test_id,started,submitted,score,total,grading_status FROM attempts WHERE user_id=? AND batch_id=? ORDER BY started DESC",
+        "SELECT id,test_id,started,submitted,score,total,grading_status,summary FROM attempts WHERE user_id=? AND batch_id=? ORDER BY started DESC",
         u.id,
         batch,
       ),
@@ -322,7 +314,7 @@ async function handle(req, env) {
   if (p === "/api/complete" && req.method === "POST") {
     const d = await req.json();
     const c = await visibleContent(db, u, d.content_id, d.batch_id);
-    if (!["notes", "slides", "recording", "guide"].includes(c.kind))
+    if (!["notes", "slides", "recording", "guide", "image"].includes(c.kind))
       fail(400, "This item cannot be self-completed.");
     if (d.complete)
       await run(
@@ -373,12 +365,7 @@ async function handle(req, env) {
     );
     if (
       d.file_id &&
-      (JSON.parse(submissionBatch.config || "{}").submission_folder ||
-        (await one(
-          db,
-          "SELECT folder_id FROM automation_sources WHERE batch_id=? AND enabled=1",
-          d.batch_id,
-        )))
+      JSON.parse(submissionBatch.config || "{}").submission_folder
     ) {
       const f = await one(db, "SELECT name FROM files WHERE id=?", d.file_id);
       if (!/\.(pdf|docx)$/i.test(f.name))
@@ -398,18 +385,83 @@ async function handle(req, env) {
   }
   if (p === "/api/tickets" && req.method === "POST") {
     const d = await req.json();
+    if (d.ticket_id) {
+      const t = await one(
+        db,
+        "SELECT * FROM tickets WHERE id=? AND user_id=?",
+        d.ticket_id,
+        u.id,
+      );
+      if (!t) fail(404, "Query not found.");
+      await member(db, u, t.batch_id);
+      const messageBody = required(d.body, "Message", 10000);
+      let msgs = [];
+      try {
+        msgs = JSON.parse(t.messages || "[]");
+      } catch {}
+      if (!msgs.length && t.body) {
+        msgs.push({
+          id: id(),
+          author_id: t.user_id,
+          author_name: "Student",
+          role: "student",
+          body: t.body,
+          created: t.created,
+        });
+      }
+      msgs.push({
+        id: id(),
+        author_id: u.id,
+        author_name: u.name,
+        role: u.role,
+        body: messageBody,
+        created: now(),
+      });
+      await run(
+        db,
+        "UPDATE tickets SET messages=?,status='open' WHERE id=?",
+        JSON.stringify(msgs),
+        t.id,
+      );
+      return json({ ok: true, id: t.id });
+    }
     await member(db, u, d.batch_id);
+    const category = [
+      "academic",
+      "lab",
+      "assessment",
+      "fees",
+      "technical",
+    ].includes(d.category)
+      ? d.category
+      : "academic";
+    const subject = required(d.subject, "Subject");
+    const bodyText = required(d.body, "Message", 10000);
+    const createdAt = now();
+    const ticketId = id();
+    const initialMessages = JSON.stringify([
+      {
+        id: id(),
+        author_id: u.id,
+        author_name: u.name,
+        role: u.role,
+        body: bodyText,
+        created: createdAt,
+      },
+    ]);
     await run(
       db,
-      "INSERT INTO tickets (id,user_id,batch_id,subject,body,created) VALUES (?,?,?,?,?,?)",
-      id(),
+      "INSERT INTO tickets (id,user_id,batch_id,subject,body,category,messages,created) VALUES (?,?,?,?,?,?,?,?)",
+      ticketId,
       u.id,
       d.batch_id,
-      required(d.subject, "Subject"),
-      required(d.body, "Message", 10000),
-      now(),
+      subject,
+      bodyText,
+      category,
+      initialMessages,
+      createdAt,
     );
-    return json({ ok: true });
+    return json({ ok: true, id: ticketId });
   }
   if (p === "/api/tests/start" && req.method === "POST") {
     const d = await req.json();
@@ -528,6 +580,7 @@ async function handle(req, env) {
         id: a.id,
         grading_status: a.grading_status,
         feedback: JSON.parse(a.feedback || "[]"),
+        summary: JSON.parse(a.summary || "{}"),
         score: a.score,
         total: a.total,
         questions: qs,
@@ -552,13 +605,22 @@ async function handle(req, env) {
             0,
           ) * 100,
         ) / 100;
+    const baselineFeedback = qs.map((q, i) => ({
+      marks: objectiveCorrect(q, answers[i]) ? q.marks : 0,
+      max_marks: q.marks,
+      feedback:
+        q.explanation ||
+        (objectiveCorrect(q, answers[i]) ? "Correct answer." : "Review this topic."),
+    }));
+    const baselineSummary = sanitizeSummary({}, qs, baselineFeedback);
     const submissionWrite = await run(
       db,
-      "UPDATE attempts SET submitted=?,answers=?,score=?,total=? WHERE id=? AND submitted IS NULL",
+      "UPDATE attempts SET submitted=?,answers=?,score=?,total=?,summary=? WHERE id=? AND submitted IS NULL",
       now(),
       JSON.stringify(answers),
       score,
       100,
+      JSON.stringify(baselineSummary),
       a.id,
     );
     const assessment = await one(
@@ -583,7 +645,7 @@ async function handle(req, env) {
     }
     const saved = await one(
       db,
-      "SELECT score,total,answers,grading_status FROM attempts WHERE id=?",
+      "SELECT score,total,answers,grading_status,summary FROM attempts WHERE id=?",
       a.id,
     );
     return json({
@@ -591,6 +653,7 @@ async function handle(req, env) {
       grading_status: saved.grading_status,
       score: saved.score,
       total: saved.total,
+      summary: JSON.parse(saved.summary || "{}"),
       questions: qs,
       answers: JSON.parse(saved.answers),
       expired,
@@ -602,12 +665,13 @@ async function handle(req, env) {
       "SELECT * FROM attempts WHERE id=?",
       p.split("/").pop(),
     );
-    if (!a || (u.role !== "admin" && a.user_id !== u.id))
+    if (!a || (!isStaff(u) && a.user_id !== u.id))
       fail(404, "Result not found.");
     if (!a.submitted) fail(400, "Test not submitted yet.");
     return json({
       id: a.id,
       feedback: JSON.parse(a.feedback || "[]"),
+      summary: JSON.parse(a.summary || "{}"),
       grading_status: a.grading_status,
       score: a.score,
       total: a.total,
@@ -632,16 +696,24 @@ async function handle(req, env) {
       "jpg",
       "jpeg",
       "webp",
+      "svg",
       "txt",
       "md",
       "zip",
       "docx",
+      "doc",
       "pptx",
+      "ppt",
       "xlsx",
       "csv",
+      "yaml",
+      "yml",
+      "sh",
+      "py",
+      "json",
     ];
     if (!allowed.includes(file.name.split(".").pop().toLowerCase()))
-      fail(400, "Supported: PDF, images, text, ZIP, Office and CSV.");
+      fail(400, "Supported: PDF, images, text, YAML/scripts, ZIP, Office and CSV.");
     const fid = id();
     await env.BUCKET.put(fid, await file.arrayBuffer());
     try {
@@ -665,7 +737,7 @@ async function handle(req, env) {
     const fid = p.split("/").pop(),
       f = await one(db, "SELECT * FROM files WHERE id=?", fid);
     if (!f) fail(404, "File not found.");
-    if (f.owner_id !== u.id && u.role !== "admin") {
+    if (f.owner_id !== u.id && !isStaff(u)) {
       const candidates = await rows(
         db,
         "SELECT DISTINCT b.id FROM content c JOIN batches b ON b.course_id=c.course_id JOIN enrollments e ON e.batch_id=b.id WHERE c.file_id=? AND c.published=1 AND e.user_id=? AND (c.batch_id IS NULL OR c.batch_id=b.id)",
@@ -684,21 +756,44 @@ async function handle(req, env) {
     }
     const obj = await env.BUCKET.get(fid);
     if (!obj) fail(404, "File unavailable.");
+    const isInline = new URL(req.url).searchParams.has("inline");
+    let contentType = "application/octet-stream";
+    let inlineAllowed = false;
+    if (isInline) {
+      if (/\.pdf$/i.test(f.name)) {
+        contentType = "application/pdf";
+        inlineAllowed = true;
+      } else if (/\.png$/i.test(f.name)) {
+        contentType = "image/png";
+        inlineAllowed = true;
+      } else if (/\.jpe?g$/i.test(f.name)) {
+        contentType = "image/jpeg";
+        inlineAllowed = true;
+      } else if (/\.webp$/i.test(f.name)) {
+        contentType = "image/webp";
+        inlineAllowed = true;
+      } else if (/\.svg$/i.test(f.name)) {
+        contentType = "image/svg+xml";
+        inlineAllowed = true;
+      } else if (/\.(txt|md|ya?ml|sh|py|json|csv)$/i.test(f.name)) {
+        contentType = "text/plain; charset=utf-8";
+        inlineAllowed = true;
+      }
+    }
     return new Response(obj.body, {
       headers: {
-        "Content-Type":
-          new URL(req.url).searchParams.has("inline") && /\.pdf$/i.test(f.name)
-            ? "application/pdf"
-            : "application/octet-stream",
-        "Content-Disposition": `${new URL(req.url).searchParams.has("inline") && /\.pdf$/i.test(f.name) ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(f.name)}`,
+        "Content-Type": contentType,
+        "Content-Disposition": `${inlineAllowed ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(f.name)}`,
+        "Content-Security-Policy":
+          "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox",
         "X-Content-Type-Options": "nosniff",
         "Cache-Control": "private, no-store",
       },
     });
   }
   if (p.startsWith("/api/admin")) {
-    admin(u);
-    return adminApi(req, db, u, p, env);
+    staff(u);
+    return adminApi(req, db, u, p);
   }
   fail(404, "Endpoint not found.");
 }
@@ -707,14 +802,15 @@ async function checkFile(db, u, fid) {
     fid &&
     !(await one(
       db,
-      "SELECT id FROM files WHERE id=? AND owner_id=?",
+      "SELECT id FROM files WHERE id=? AND (owner_id=? OR ?=1)",
       fid,
       u.id,
+      isStaff(u) ? 1 : 0,
     ))
   )
     fail(400, "Upload a valid file first.");
 }
-async function adminApi(req, db, u, p, env) {
+async function adminApi(req, db, u, p) {
   if (p === "/api/admin/data" && req.method === "GET") {
     const names = [
       "users",
@@ -732,11 +828,20 @@ async function adminApi(req, db, u, p, env) {
       "automation_sources",
     ];
     const data = {};
-    for (const n of names)
+    for (const n of names) {
+      if (n === "payments" && u.role !== "admin") {
+        data[n] = [];
+        continue;
+      }
       data[n] = await rows(
         db,
-        `SELECT ${n === "attempts" ? "id,test_id,user_id,batch_id,started,submitted,score,total" : "*"} FROM ${n} LIMIT 5000`,
+        `SELECT ${
+          n === "attempts"
+            ? "id,test_id,user_id,batch_id,started,submitted,score,total,grading_status,summary"
+            : "*"
+        } FROM ${n} LIMIT 5000`,
       );
+    }
     data.audit = await rows(
       db,
       "SELECT * FROM audit ORDER BY created DESC LIMIT 100",
@@ -752,16 +857,7 @@ async function adminApi(req, db, u, p, env) {
       key = v.id || id();
     let fields;
     if (kind === "courses") {
-      if (v.sop_file_id) {
-        await checkFile(db, u, v.sop_file_id);
-        const file = await one(
-          db,
-          "SELECT name FROM files WHERE id=?",
-          v.sop_file_id,
-        );
-        if (!/\.(pdf|docx)$/i.test(file.name))
-          fail(400, "Course SOP must be PDF or DOCX.");
-      }
+      admin(u);
       let syllabus;
       try {
         syllabus = JSON.parse(v.syllabus);
@@ -829,10 +925,14 @@ async function adminApi(req, db, u, p, env) {
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
         fail(400, "Enter a valid email.");
       await member(db, u, v.batch_id);
+      const targetRole = ["admin", "trainer", "student"].includes(v.role)
+        ? v.role
+        : "student";
+      if (targetRole !== "student") admin(u);
       fields = {
         email,
         batch_id: v.batch_id,
-        role: v.role === "admin" ? "admin" : "student",
+        role: targetRole,
         fee: integer(v.fee, "fee"),
       };
       const exists = await one(
@@ -843,6 +943,27 @@ async function adminApi(req, db, u, p, env) {
       );
       if (exists && !v.id)
         fail(400, "This student is already invited to the batch.");
+      // Auto-enroll if user already exists
+      const existingUser = await one(
+        db,
+        "SELECT id,role FROM users WHERE email=?",
+        email,
+      );
+      if (existingUser) {
+        await run(
+          db,
+          "INSERT OR IGNORE INTO enrollments (id,user_id,batch_id,fee,created) VALUES (?,?,?,?,?)",
+          id(),
+          existingUser.id,
+          v.batch_id,
+          fields.fee,
+          now(),
+        );
+        if (targetRole === "admin")
+          await run(db, "UPDATE users SET role='admin' WHERE id=?", existingUser.id);
+        else if (targetRole === "trainer" && existingUser.role !== "admin")
+          await run(db, "UPDATE users SET role='trainer' WHERE id=?", existingUser.id);
+      }
     } else if (kind === "content") {
       const kinds = [
         "live",
@@ -851,7 +972,9 @@ async function adminApi(req, db, u, p, env) {
         "lab",
         "slides",
         "guide",
+        "image",
         "sop",
+        "test_link",
       ];
       if (!kinds.includes(v.kind)) fail(400, "Invalid resource type.");
       if (!(await one(db, "SELECT id FROM courses WHERE id=?", v.course_id)))
@@ -904,16 +1027,33 @@ async function adminApi(req, db, u, p, env) {
           "Each question needs a supported type, valid answer key and a grading rubric for written answers.",
         );
       }
-      if (!["daily", "weekly", "monthly", "topic"].includes(v.kind))
+      if (!["daily", "weekly", "monthly"].includes(v.kind))
         fail(400, "Choose a test type.");
       if (!(await one(db, "SELECT id FROM courses WHERE id=?", v.course_id)))
         fail(400, "Choose a course.");
+      const old = await one(db, "SELECT * FROM tests WHERE id=?", key);
       fields = {
         course_id: v.course_id,
         title: required(v.title, "Title"),
         kind: v.kind,
         topic_order: integer(v.topic_order, "topic", 1, 100),
         duration: integer(v.duration, "duration", 1, 180),
+        batch_id:
+          v.batch_id !== undefined
+            ? v.batch_id || null
+            : old?.batch_id || null,
+        source_ids:
+          v.source_ids !== undefined
+            ? typeof v.source_ids === "string"
+              ? v.source_ids
+              : JSON.stringify(v.source_ids)
+            : old?.source_ids || "[]",
+        ai_generated:
+          v.ai_generated !== undefined
+            ? Number(v.ai_generated)
+              ? 1
+              : 0
+            : old?.ai_generated || 0,
         questions: JSON.stringify(qs),
         published: Number(v.published) ? 1 : 0,
       };
@@ -931,58 +1071,242 @@ async function adminApi(req, db, u, p, env) {
       typeof v.drive_folder === "string" &&
       v.drive_folder.trim()
     )
-      await saveSource(db, key, v.drive_folder, true);
-    if (kind === "invitations") {
-      const person = await one(
+      await saveSource(
         db,
-        "SELECT id FROM users WHERE email=?",
-        fields.email,
-      );
-      if (person)
-        await run(
-          db,
-          "INSERT OR IGNORE INTO enrollments(id,user_id,batch_id,fee,created) VALUES (?,?,?,?,?)",
-          id(),
-          person.id,
-          fields.batch_id,
-          fields.fee,
-          now(),
-        );
-    }
-    if (kind === "courses" && v.sop_file_id) {
-      await checkFile(db, u, v.sop_file_id);
-      const fid = await one(
-        db,
-        "SELECT name FROM files WHERE id=?",
-        v.sop_file_id,
-      );
-      if (!/\.(pdf|docx)$/i.test(fid.name))
-        fail(400, "Course SOP must be PDF or DOCX.");
-      const sop = await one(
-        db,
-        "SELECT id FROM content WHERE course_id=? AND batch_id IS NULL AND kind='sop'",
         key,
+        v.drive_folder,
+        true,
+        v.drive_config !== undefined ? v.drive_config : null,
       );
-      await run(
-        db,
-        "INSERT INTO content(id,course_id,kind,title,topic,topic_order,body,file_id,published,created) VALUES (?,?,'sop',?,'Course SOP',1,'',?,1,?) ON CONFLICT(id) DO UPDATE SET file_id=excluded.file_id,title=excluded.title",
-        sop?.id || id(),
-        key,
-        fields.title + " · SOP",
-        v.sop_file_id,
-        now(),
-      );
-    }
-    if (kind === "content" && fields.published && fields.batch_id) {
-      await planAssessments(env, fields.batch_id);
-      try {
-        await wakeEngine(env);
-      } catch {}
-    }
     await log(db, u, `save:${kind}`, key);
     return json({ id: key });
   }
+  if (action === "delete") {
+    const kind = d.entity,
+      targetId = required(d.id, "ID");
+    if (kind === "courses") {
+      admin(u);
+      if (
+        await one(db, "SELECT id FROM batches WHERE course_id=?", targetId)
+      )
+        fail(400, "Delete or archive batches in this course before deleting it.");
+      await run(db, "DELETE FROM content WHERE course_id=?", targetId);
+      await run(db, "DELETE FROM tests WHERE course_id=?", targetId);
+      await run(db, "DELETE FROM courses WHERE id=?", targetId);
+    } else if (kind === "batches") {
+      if (
+        await one(db, "SELECT id FROM enrollments WHERE batch_id=?", targetId)
+      )
+        fail(400, "Remove student enrollments before deleting this batch.");
+      const sources = await rows(
+        db,
+        "SELECT id FROM automation_sources WHERE batch_id=?",
+        targetId,
+      );
+      for (const s of sources) {
+        await run(db, "DELETE FROM import_items WHERE source_id=?", s.id);
+        await run(db, "DELETE FROM import_runs WHERE source_id=?", s.id);
+      }
+      await run(db, "DELETE FROM automation_sources WHERE batch_id=?", targetId);
+      const groups = await rows(
+        db,
+        "SELECT id FROM access_groups WHERE batch_id=?",
+        targetId,
+      );
+      for (const g of groups) {
+        await run(db, "DELETE FROM group_members WHERE group_id=?", g.id);
+      }
+      await run(db, "DELETE FROM access_groups WHERE batch_id=?", targetId);
+      await run(db, "DELETE FROM invitations WHERE batch_id=?", targetId);
+      await run(db, "DELETE FROM content WHERE batch_id=?", targetId);
+      await run(db, "DELETE FROM tests WHERE batch_id=?", targetId);
+      await run(db, "DELETE FROM batches WHERE id=?", targetId);
+    } else if (kind === "invitations") {
+      await run(db, "DELETE FROM invitations WHERE id=?", targetId);
+    } else if (kind === "enrollments") {
+      if (
+        await one(
+          db,
+          "SELECT id FROM payments WHERE enrollment_id=?",
+          targetId,
+        )
+      )
+        fail(400, "Void recorded fee payments before removing this enrollment.");
+      await run(db, "DELETE FROM enrollments WHERE id=?", targetId);
+    } else if (kind === "payments") {
+      admin(u);
+      await run(db, "DELETE FROM payments WHERE id=?", targetId);
+    } else if (kind === "content") {
+      await run(db, "DELETE FROM completions WHERE content_id=?", targetId);
+      await run(db, "DELETE FROM submissions WHERE content_id=?", targetId);
+      await run(
+        db,
+        "UPDATE import_items SET content_id=NULL WHERE content_id=?",
+        targetId,
+      );
+      await run(db, "DELETE FROM content WHERE id=?", targetId);
+    } else if (kind === "tests") {
+      await run(db, "DELETE FROM attempts WHERE test_id=?", targetId);
+      await run(db, "DELETE FROM tests WHERE id=?", targetId);
+    } else {
+      fail(400, "Unsupported delete entity.");
+    }
+    await log(db, u, `delete:${kind}`, targetId);
+    return json({ ok: true });
+  }
+  if (action === "attempt-action") {
+    const a = await one(
+      db,
+      "SELECT * FROM attempts WHERE id=?",
+      required(d.attempt_id, "Attempt ID"),
+    );
+    if (!a) fail(404, "Attempt not found.");
+    if (d.mode === "reset") {
+      await run(
+        db,
+        "DELETE FROM engine_jobs WHERE kind='evaluate_test' AND entity_id=?",
+        a.id,
+      );
+      await run(db, "DELETE FROM attempts WHERE id=?", a.id);
+      await log(db, u, "retake:attempt", a.id);
+      return json({ ok: true });
+    }
+    if (d.mode === "grade") {
+      const newScore = Number(d.score);
+      if (!Number.isFinite(newScore) || newScore < 0 || newScore > 100)
+        fail(400, "Score must be between 0 and 100.");
+      const updatedFeedback =
+        d.feedback !== undefined
+          ? typeof d.feedback === "string"
+            ? d.feedback
+            : JSON.stringify(d.feedback)
+          : a.feedback || "[]";
+      const updatedSummary =
+        d.summary !== undefined
+          ? typeof d.summary === "string"
+            ? d.summary
+            : JSON.stringify(d.summary)
+          : a.summary || "{}";
+      await run(
+        db,
+        "UPDATE attempts SET score=?,feedback=?,summary=?,grading_status='complete' WHERE id=?",
+        Math.round(newScore * 100) / 100,
+        updatedFeedback,
+        updatedSummary,
+        a.id,
+      );
+      await log(db, u, "grade:attempt", a.id);
+      return json({ ok: true });
+    }
+    fail(400, "Choose reset or grade.");
+  }
+  if (action === "bulk-invite") {
+    const batchId = required(d.batch_id, "Batch");
+    await member(db, u, batchId);
+    const defaultFee = integer(d.fee || 0, "fee");
+    let entries = [];
+    if (Array.isArray(d.entries)) {
+      entries = d.entries;
+    } else if (typeof d.csv === "string" && d.csv.trim()) {
+      for (const rawLine of d.csv.split(/\r?\n/)) {
+        const line = rawLine.trim();
+        if (!line || /^email(\s*,|$)/i.test(line)) continue;
+        const parts = line.split(",").map((s) => s.trim());
+        entries.push({
+          email: parts[0],
+          name: parts[1] || "",
+          fee: parts[2] !== undefined && parts[2] !== "" ? Number(parts[2]) : defaultFee,
+        });
+      }
+    }
+    if (!entries.length || entries.length > 500)
+      fail(400, "Provide between 1 and 500 student entries.");
+    let invited = 0,
+      enrolled = 0;
+    for (const entry of entries) {
+      const email = String(entry.email || "")
+        .trim()
+        .toLowerCase();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
+        fail(400, `Invalid email address: ${email || "empty"}`);
+      const fee = Number.isSafeInteger(Number(entry.fee))
+        ? Math.max(0, Number(entry.fee))
+        : defaultFee;
+      await run(
+        db,
+        "INSERT INTO invitations (id,email,batch_id,role,fee) VALUES (?,?,?,'student',?) ON CONFLICT(email,batch_id) DO UPDATE SET fee=excluded.fee",
+        id(),
+        email,
+        batchId,
+        fee,
+      );
+      invited++;
+      const existingUser = await one(
+        db,
+        "SELECT id FROM users WHERE email=?",
+        email,
+      );
+      if (existingUser) {
+        const res = await run(
+          db,
+          "INSERT OR IGNORE INTO enrollments (id,user_id,batch_id,fee,created) VALUES (?,?,?,?,?)",
+          id(),
+          existingUser.id,
+          batchId,
+          fee,
+          now(),
+        );
+        if (res.meta?.changes) enrolled++;
+      }
+    }
+    await log(db, u, "bulk_invite:invitations", batchId);
+    return json({ ok: true, invited, enrolled });
+  }
+  if (action === "complete-session") {
+    const session = await one(
+      db,
+      "SELECT * FROM content WHERE id=? AND kind='live'",
+      required(d.session_id, "Session ID"),
+    );
+    if (!session) fail(404, "Live session not found.");
+    await run(
+      db,
+      "UPDATE content SET session_status='completed' WHERE id=?",
+      session.id,
+    );
+    let recordingId = null;
+    if (d.recording_url && String(d.recording_url).trim()) {
+      const recUrl = url(d.recording_url);
+      recordingId = id();
+      await run(
+        db,
+        "INSERT INTO content (id,course_id,batch_id,kind,title,topic,topic_order,body,url,starts_at,duration,published,created) VALUES (?,?,?,'recording',?,?,?,?,?,?,?,1,?)",
+        recordingId,
+        session.course_id,
+        session.batch_id,
+        `${session.title} — Recording`,
+        session.topic,
+        session.topic_order,
+        String(d.notes || session.body || "").slice(0, 10000),
+        recUrl,
+        session.starts_at || "",
+        session.duration || 60,
+        now(),
+      );
+    }
+    if (d.advance_covered !== false && session.batch_id) {
+      await run(
+        db,
+        "UPDATE batches SET covered=MAX(covered,?) WHERE id=?",
+        session.topic_order,
+        session.batch_id,
+      );
+    }
+    await log(db, u, "complete:session", session.id);
+    return json({ ok: true, recording_id: recordingId });
+  }
   if (action === "payment") {
+    admin(u);
     const enrollment = await one(
       db,
       "SELECT * FROM enrollments WHERE id=?",
@@ -1063,12 +1387,36 @@ async function adminApi(req, db, u, p, env) {
   }
   if (action === "reply") {
     if (!["open", "resolved"].includes(d.status)) fail(400, "Invalid status.");
-    if (!(await one(db, "SELECT id FROM tickets WHERE id=?", d.id)))
-      fail(404, "Query not found.");
+    const t = await one(db, "SELECT * FROM tickets WHERE id=?", d.id);
+    if (!t) fail(404, "Query not found.");
+    const replyText = required(d.reply, "Reply", 10000);
+    let msgs = [];
+    try {
+      msgs = JSON.parse(t.messages || "[]");
+    } catch {}
+    if (!msgs.length && t.body) {
+      msgs.push({
+        id: id(),
+        author_id: t.user_id,
+        author_name: "Student",
+        role: "student",
+        body: t.body,
+        created: t.created,
+      });
+    }
+    msgs.push({
+      id: id(),
+      author_id: u.id,
+      author_name: u.name,
+      role: u.role,
+      body: replyText,
+      created: now(),
+    });
     await run(
       db,
-      "UPDATE tickets SET reply=?,status=? WHERE id=?",
-      required(d.reply, "Reply", 10000),
+      "UPDATE tickets SET reply=?,messages=?,status=? WHERE id=?",
+      replyText,
+      JSON.stringify(msgs),
       d.status,
       d.id,
     );
@@ -1076,9 +1424,11 @@ async function adminApi(req, db, u, p, env) {
     return json({ ok: true });
   }
   if (action === "role") {
+    admin(u);
     const owner = await one(db, "SELECT value FROM settings WHERE key='owner'");
-    if (d.id === owner.value) fail(400, "The owner role cannot be changed.");
-    if (!["admin", "student"].includes(d.role)) fail(400, "Invalid role.");
+    if (d.id === owner?.value) fail(400, "The owner role cannot be changed.");
+    if (!["admin", "trainer", "student"].includes(d.role))
+      fail(400, "Invalid role.");
     await run(db, "UPDATE users SET role=? WHERE id=?", d.role, d.id);
     await run(
       db,

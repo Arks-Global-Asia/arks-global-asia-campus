@@ -152,6 +152,7 @@ export const attempts = sqliteTable(
     score: integer("score"),
     total: integer("total"),
     feedback: text("feedback"),
+    summary: text("summary").notNull().default("{}"),
     grading_status: text("grading_status").notNull().default("complete"),
     snapshot: text("snapshot").notNull(),
   },
@@ -186,6 +187,8 @@ export const tickets = sqliteTable("tickets", {
     .references(() => batches.id),
   subject: text("subject").notNull(),
   body: text("body").notNull(),
+  category: text("category").notNull().default("academic"),
+  messages: text("messages").notNull().default("[]"),
   reply: text("reply").notNull().default(""),
   status: text("status").notNull().default("open"),
   created: text("created").notNull(),
@@ -235,6 +238,7 @@ export const automationSources = sqliteTable(
     last_error: text("last_error"),
     sync_requested: integer("sync_requested").notNull().default(1),
     generation: integer("generation").notNull().default(1),
+    config: text("config").notNull().default("{}"),
     created: text("created").notNull(),
   },
   (t) => [uniqueIndex("source_batch").on(t.batch_id)],
@@ -276,6 +280,7 @@ export const importItems = sqliteTable(
     review_note: text("review_note").notNull().default(""),
     reviewed_by: text("reviewed_by"),
     reviewed_at: text("reviewed_at"),
+    class_date: text("class_date").notNull().default(""),
     created: text("created").notNull(),
   },
   (t) => [
@@ -353,5 +358,3 @@ export const engineJobs = sqliteTable(
       .where(sql`status IN ('pending','running')`),
   ],
 );
-
-export const authIdentities=sqliteTable('auth_identities',{id:text('id').primaryKey(),issuer:text('issuer').notNull(),subject:text('subject').notNull(),user_id:text('user_id').notNull().references(()=>users.id)});

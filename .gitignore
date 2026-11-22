@@ -16,9 +16,3 @@ azure-config.json
 google-config.json
 verification.json
 local.settings.json
-
-api/node_modules/
-api/dist/
-portal-azure-config.json
-*-backup.json
-*.bak

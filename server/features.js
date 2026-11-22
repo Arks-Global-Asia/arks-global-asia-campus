@@ -17,10 +17,169 @@ import {
   json,
   member,
   admin,
+  staff,
+  isStaff,
   https,
+  istDateInfo,
 } from "./common.js";
 import { setAdminPassword } from "./auth.js";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
+
+export const ELIGIBLE_LEARNING_KINDS = [
+  "notes",
+  "slides",
+  "guide",
+  "recording",
+  "lab",
+  "image",
+];
+
+export const COMPREHENSIVE_QUESTION_TYPES = [
+  "mcq",
+  "multi_select",
+  "true_false",
+  "fill_blank",
+  "short_answer",
+  "scenario",
+  "code",
+  "matching",
+  "ordering",
+];
+
+const VERIFIED_DOC_FALLBACKS = [
+  { match: /k8s|kubernetes|kubectl|pod|deployment|helm/i, url: "https://kubernetes.io/docs/home/", title: "Kubernetes Official Documentation" },
+  { match: /docker|container|dockerfile|compose/i, url: "https://docs.docker.com/", title: "Docker Official Documentation" },
+  { match: /azure|aks|arm|bicep|devops/i, url: "https://learn.microsoft.com/en-us/azure/", title: "Microsoft Azure Official Documentation" },
+  { match: /terraform|hcl|iac/i, url: "https://developer.hashicorp.com/terraform/docs", title: "Terraform Official Documentation" },
+  { match: /git|branch|rebase|commit|merge/i, url: "https://git-scm.com/doc", title: "Git Official Reference Documentation" },
+  { match: /github|actions|workflow|ci\/cd/i, url: "https://docs.github.com/en/actions", title: "GitHub Actions Official Documentation" },
+  { match: /ansible|playbook/i, url: "https://docs.ansible.com/", title: "Ansible Official Documentation" },
+  { match: /linux|bash|shell|chmod|systemd/i, url: "https://man7.org/linux/man-pages/", title: "Linux Manual Pages & Shell Reference" },
+];
+
+export function calculateAssessmentSpec(resources = [], kind = "daily") {
+  const countResources = Math.max(1, resources.length);
+  const totalChars = resources.reduce(
+    (sum, r) => sum + String(r.title || "").length + String(r.body || "").length,
+    0,
+  );
+  const isWeekly = kind === "weekly";
+  const minCount = isWeekly ? 25 : 20;
+  const maxCount = isWeekly ? 50 : 40;
+  const base = isWeekly ? 20 : 16;
+  const perResource = isWeekly ? 3 : 4;
+  const depthBonus = Math.floor(totalChars / 2500);
+  const count = Math.max(
+    minCount,
+    Math.min(maxCount, base + countResources * perResource + depthBonus),
+  );
+  const duration = isWeekly
+    ? Math.max(45, Math.min(120, Math.round(count * 1.5)))
+    : Math.max(30, Math.min(90, Math.round(count * 1.5)));
+  return {
+    count,
+    duration,
+    question_types: [...COMPREHENSIVE_QUESTION_TYPES],
+  };
+}
+
+export function sanitizeSummary(raw, questions = [], feedback = []) {
+  const input = raw && typeof raw === "object" ? raw : {};
+  let strengths = Array.isArray(input.strengths)
+    ? input.strengths
+        .map((s) => String(s || "").trim().slice(0, 400))
+        .filter(Boolean)
+        .slice(0, 8)
+    : [];
+  let improvements = Array.isArray(input.improvements)
+    ? input.improvements
+        .map((s) => String(s || "").trim().slice(0, 400))
+        .filter(Boolean)
+        .slice(0, 8)
+    : [];
+  let recommendations = Array.isArray(input.recommendations)
+    ? input.recommendations
+        .map((r) => {
+          if (!r || typeof r !== "object") return null;
+          const title = String(r.title || "").trim().slice(0, 200);
+          if (!title) return null;
+          const category = ["official_doc", "notes", "video"].includes(
+            r.category,
+          )
+            ? r.category
+            : "official_doc";
+          let safeUrl = "";
+          if (r.url && typeof r.url === "string") {
+            try {
+              const u = new URL(r.url.trim());
+              if (u.protocol === "https:") safeUrl = u.href;
+            } catch {}
+          }
+          if (category === "official_doc" && !safeUrl) {
+            const matched = VERIFIED_DOC_FALLBACKS.find((f) =>
+              f.match.test(title + " " + (r.description || "")),
+            );
+            safeUrl = matched ? matched.url : "https://kubernetes.io/docs/home/";
+          }
+          return {
+            title,
+            category,
+            url: safeUrl,
+            description: String(r.description || "").trim().slice(0, 500),
+          };
+        })
+        .filter(Boolean)
+        .slice(0, 8)
+    : [];
+
+  // Fallback synthesis if AI worker did not supply summary fields
+  if (!strengths.length && questions.length && feedback.length) {
+    const strongQs = questions.filter(
+      (q, i) => (feedback[i]?.marks ?? 0) >= (q.marks || 1) * 0.7,
+    );
+    if (strongQs.length) {
+      strengths = strongQs
+        .slice(0, 3)
+        .map((q) => `Solid understanding demonstrated on: ${String(q.prompt || "").slice(0, 120)}`);
+    } else {
+      strengths = ["Completed assessment attempt; review foundational concepts below."];
+    }
+  }
+  if (!improvements.length && questions.length && feedback.length) {
+    const weakQs = questions.filter(
+      (q, i) => (feedback[i]?.marks ?? 0) < (q.marks || 1) * 0.7,
+    );
+    if (weakQs.length) {
+      improvements = weakQs
+        .slice(0, 3)
+        .map((q) => `Review concept & syntax for: ${String(q.prompt || "").slice(0, 120)}`);
+    } else {
+      improvements = ["Strong performance across all evaluated topics. Continue practicing advanced YAML/CLI scenarios."];
+    }
+  }
+  if (!recommendations.length && questions.length) {
+    const allPrompts = questions.map((q) => q.prompt || "").join(" ");
+    const matchedDocs = VERIFIED_DOC_FALLBACKS.filter((f) =>
+      f.match.test(allPrompts),
+    ).slice(0, 2);
+    for (const doc of matchedDocs.length ? matchedDocs : [VERIFIED_DOC_FALLBACKS[0]]) {
+      recommendations.push({
+        title: doc.title,
+        category: "official_doc",
+        url: doc.url,
+        description: "Review official reference guides and configuration specifications.",
+      });
+    }
+    recommendations.push({
+      title: "Batch Class Notes, Resource Creation Guides & Recordings",
+      category: "notes",
+      url: "",
+      description: "Revisit your approved class notes and live session recordings in the Learning Library.",
+    });
+  }
+
+  return { strengths, improvements, recommendations };
+}
 
 export async function wakeEngine(env, source_id = null) {
   if (!env.AZURE_ENGINE_URL || !env.AZURE_ENGINE_KEY) return false;
@@ -51,6 +210,7 @@ export async function wakeEngine(env, source_id = null) {
     );
   }
 }
+
 export async function queueJob(db, kind, batch, entity, payload) {
   const existing = await one(
     db,
@@ -72,6 +232,248 @@ export async function queueJob(db, kind, batch, entity, payload) {
   );
   return id;
 }
+
+export async function scheduleAssessmentsForCampus(db, env, options = {}) {
+  const info = istDateInfo(options.reference_date || new Date());
+  const isSunday = info.dayOfWeek === 0;
+  const mode = options.mode || (isSunday ? "weekly" : "daily");
+
+  // Hard rule: Never run a Daily Test on Sunday unless explicitly forced by mode='daily' on a non-Sunday
+  if (isSunday && mode === "daily" && !options.force_daily_on_sunday) {
+    return {
+      mode: "skipped_sunday_daily",
+      ist_date: info.dateKey,
+      results: [],
+      message: "Daily tests do not run on Sundays. Sunday 9:00 AM IST runs the Weekly Test.",
+    };
+  }
+
+  const activeBatches = options.batch_id
+    ? await rows(
+        db,
+        "SELECT * FROM batches WHERE id=? AND status='active'",
+        options.batch_id,
+      )
+    : await rows(db, "SELECT * FROM batches WHERE status='active'");
+
+  const results = [];
+  let queuedAny = false;
+
+  for (const b of activeBatches) {
+    if (!options.batch_id) {
+      const srcRow = await one(
+        db,
+        "SELECT config FROM automation_sources WHERE batch_id=?",
+        b.id,
+      );
+      if (srcRow?.config) {
+        try {
+          if (JSON.parse(srcRow.config).auto_daily_test === false) {
+            results.push({
+              batch_id: b.id,
+              batch_name: b.name,
+              kind: mode,
+              status: "skipped",
+              reason: "auto_schedule_disabled",
+            });
+            continue;
+          }
+        } catch {}
+      }
+    }
+    if (mode === "weekly") {
+      const entityId = `weekly-${b.id}-${info.weekMondayKey}`;
+      const existingTest = await one(
+        db,
+        "SELECT id FROM tests WHERE id=?",
+        entityId,
+      );
+      if (existingTest) {
+        results.push({
+          batch_id: b.id,
+          batch_name: b.name,
+          kind: "weekly",
+          status: "skipped",
+          reason: "already_generated",
+          test_id: entityId,
+        });
+        continue;
+      }
+
+      // Find all approved learning materials published Monday 00:00 IST through Saturday 23:59:59 IST of this week
+      const weekMaterials = await rows(
+        db,
+        `SELECT c.* FROM content c
+         LEFT JOIN import_items i ON i.content_id = c.id AND i.status = 'published'
+         WHERE c.course_id = ?
+           AND (c.batch_id = ? OR c.batch_id IS NULL)
+           AND c.published = 1
+           AND c.kind IN ('notes','slides','guide','lab','recording','image')
+           AND (
+             (i.class_date >= ? AND i.class_date <= ?)
+             OR (c.created >= ? AND c.created <= ?)
+           )
+         ORDER BY c.topic_order ASC, c.created ASC`,
+        b.course_id,
+        b.id,
+        info.weekMondayKey,
+        info.weekSaturdayKey,
+        info.mondayStartUtc,
+        info.saturdayEndUtc,
+      );
+
+      const uniqueMaterials = [
+        ...new Map(weekMaterials.map((m) => [m.id, m])).values(),
+      ].slice(0, 30);
+
+      if (!uniqueMaterials.length) {
+        results.push({
+          batch_id: b.id,
+          batch_name: b.name,
+          kind: "weekly",
+          status: "skipped",
+          reason: "no_classes_this_week",
+        });
+        continue;
+      }
+
+      const spec = calculateAssessmentSpec(uniqueMaterials, "weekly");
+      const maxTopicOrder = Math.max(
+        1,
+        ...uniqueMaterials.map((c) => Number(c.topic_order) || 1),
+      );
+      const jobId = await queueJob(db, "generate_test", b.id, entityId, {
+        title: `Weekly Assessment (${info.weekMondayKey} to ${info.weekSaturdayKey})`,
+        kind: "weekly",
+        count: Number(options.count) >= 25 ? Number(options.count) : spec.count,
+        question_types: spec.question_types,
+        duration: spec.duration,
+        course_id: b.course_id,
+        topic_order: Math.min(b.covered || maxTopicOrder, maxTopicOrder),
+        source_ids: uniqueMaterials.map((c) => c.id),
+        auto_publish: options.auto_publish !== false,
+      });
+      queuedAny = true;
+      results.push({
+        batch_id: b.id,
+        batch_name: b.name,
+        kind: "weekly",
+        status: "queued",
+        job_id: jobId,
+        test_id: entityId,
+        count: Number(options.count) >= 25 ? Number(options.count) : spec.count,
+        source_count: uniqueMaterials.length,
+      });
+    } else {
+      // Monday-Saturday 9:00 AM IST Daily Assessment covering previous day's class materials
+      const targetClassDate = options.class_date || info.prevDateKey;
+      const entityId = `daily-${b.id}-${targetClassDate}`;
+      const existingTest = await one(
+        db,
+        "SELECT id FROM tests WHERE id=?",
+        entityId,
+      );
+      if (existingTest) {
+        results.push({
+          batch_id: b.id,
+          batch_name: b.name,
+          kind: "daily",
+          status: "skipped",
+          reason: "already_generated",
+          test_id: entityId,
+        });
+        continue;
+      }
+
+      // Compute UTC window for targetClassDate (00:00:00 IST of targetClassDate through 09:00:00 IST next day)
+      const [y, m, d] = targetClassDate.split("-").map(Number);
+      const windowStartUtc = new Date(
+        Date.UTC(y, m - 1, d, 0, 0, 0, 0) - 330 * 60 * 1000,
+      ).toISOString();
+      const windowEndUtc = new Date(
+        Date.UTC(y, m - 1, d + 1, 9, 0, 0, 0) - 330 * 60 * 1000,
+      ).toISOString();
+
+      const dayMaterials = await rows(
+        db,
+        `SELECT c.* FROM content c
+         LEFT JOIN import_items i ON i.content_id = c.id AND i.status = 'published'
+         WHERE c.course_id = ?
+           AND (c.batch_id = ? OR c.batch_id IS NULL)
+           AND c.published = 1
+           AND c.kind IN ('notes','slides','guide','lab','recording','image')
+           AND (
+             i.class_date = ?
+             OR (c.created >= ? AND c.created <= ?)
+           )
+         ORDER BY c.topic_order ASC, c.created ASC`,
+        b.course_id,
+        b.id,
+        targetClassDate,
+        windowStartUtc,
+        windowEndUtc,
+      );
+
+      const uniqueMaterials = [
+        ...new Map(dayMaterials.map((item) => [item.id, item])).values(),
+      ].slice(0, 30);
+
+      if (!uniqueMaterials.length) {
+        results.push({
+          batch_id: b.id,
+          batch_name: b.name,
+          kind: "daily",
+          status: "skipped",
+          reason: "no_class_materials",
+          class_date: targetClassDate,
+        });
+        continue;
+      }
+
+      const spec = calculateAssessmentSpec(uniqueMaterials, "daily");
+      const maxTopicOrder = Math.max(
+        1,
+        ...uniqueMaterials.map((c) => Number(c.topic_order) || 1),
+      );
+      const jobId = await queueJob(db, "generate_test", b.id, entityId, {
+        title: `Daily Assessment — ${targetClassDate}`,
+        kind: "daily",
+        count: Number(options.count) >= 20 ? Number(options.count) : spec.count,
+        question_types: spec.question_types,
+        duration: spec.duration,
+        course_id: b.course_id,
+        topic_order: Math.min(b.covered || maxTopicOrder, maxTopicOrder),
+        source_ids: uniqueMaterials.map((c) => c.id),
+        auto_publish: options.auto_publish !== false,
+      });
+      queuedAny = true;
+      results.push({
+        batch_id: b.id,
+        batch_name: b.name,
+        kind: "daily",
+        status: "queued",
+        job_id: jobId,
+        test_id: entityId,
+        class_date: targetClassDate,
+        count: Number(options.count) >= 20 ? Number(options.count) : spec.count,
+        source_count: uniqueMaterials.length,
+      });
+    }
+  }
+
+  if (queuedAny && env.AZURE_ENGINE_URL) {
+    try {
+      await wakeEngine(env);
+    } catch {}
+  }
+
+  return {
+    mode,
+    ist_date: info.dateKey,
+    results,
+  };
+}
+
 function safeConfig(d) {
   const email = String(d.support_email || "").trim();
   if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
@@ -103,50 +505,14 @@ function safeConfig(d) {
     pass_mark: Math.min(100, Math.max(1, Number(d.pass_mark) || 70)),
     sop_content_id: d.sop_content_id || "",
     require_google_group: !!d.require_google_group,
-    assessment_automation: (() => {
-      const v = d.assessment_automation || {};
-      if (
-        v.required_kinds &&
-        (!Array.isArray(v.required_kinds) ||
-          v.required_kinds.some(
-            (k) =>
-              !["recording", "notes", "slides", "guide", "lab"].includes(k),
-          ))
-      )
-        fail(400, "Invalid required resource types.");
-      if (
-        v.lesson_topics &&
-        (typeof v.lesson_topics !== "object" ||
-          Object.keys(v.lesson_topics).some((k) => !/^\d{1,3}$/.test(k)))
-      )
-        fail(400, "Lesson mapping needs class numbers.");
-      return {
-        enabled: v.enabled !== false,
-        auto_publish: v.auto_publish !== false,
-        week_size: Math.max(1, Math.min(30, Number(v.week_size) || 7)),
-        question_count: Math.max(
-          11,
-          Math.min(100, Number(v.question_count) || 12),
-        ),
-        required_kinds: v.required_kinds || [
-          "recording",
-          "notes",
-          "slides",
-          "lab",
-        ],
-        lesson_topics: v.lesson_topics || {},
-        completed_topics: Array.isArray(v.completed_topics)
-          ? v.completed_topics.map(String).slice(0, 100)
-          : [],
-      };
-    })(),
   };
 }
+
 export async function featureRoutes(req, env, u) {
   const db = env.DB,
     p = new URL(req.url).pathname;
   if (p === "/api/admin/features" && req.method === "GET") {
-    admin(u);
+    staff(u);
     return json({
       groups: await rows(db, "SELECT * FROM access_groups"),
       members: await rows(db, "SELECT * FROM group_members"),
@@ -156,27 +522,21 @@ export async function featureRoutes(req, env, u) {
       ),
       engine_ready: !!(env.AZURE_ENGINE_URL && env.AZURE_ENGINE_KEY),
       google_ready: !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET),
-      auth_mode: env.AUTH_MODE || "sites",
+      auth_mode: env.AUTH_MODE || "google",
     });
   }
   if (p === "/api/admin/password" && req.method === "POST")
     return setAdminPassword(db, u, await req.json());
   if (p === "/api/admin/batch-config" && req.method === "POST") {
-    admin(u);
+    staff(u);
     const d = await req.json();
-    const previous = await member(db, u, d.batch_id);
+    await member(db, u, d.batch_id);
     await run(
       db,
       "UPDATE batches SET config=? WHERE id=?",
-      JSON.stringify(
-        safeConfig({ ...JSON.parse(previous.config || "{}"), ...d }),
-      ),
+      JSON.stringify(safeConfig(d)),
       d.batch_id,
     );
-    await (await import("./learning.js")).planAssessments(env, d.batch_id);
-    try {
-      await wakeEngine(env);
-    } catch {}
     return json({ ok: true });
   }
   if (p === "/api/admin/access" && req.method === "POST") {
@@ -196,7 +556,7 @@ export async function featureRoutes(req, env, u) {
     return json({ ok: true });
   }
   if (p === "/api/admin/group" && req.method === "POST") {
-    admin(u);
+    staff(u);
     const d = await req.json();
     await member(db, u, d.batch_id);
     if (!d.name?.trim()) fail(400, "Group name is required.");
@@ -304,7 +664,7 @@ export async function featureRoutes(req, env, u) {
     return json({ id: group });
   }
   if (p === "/api/admin/sessions" && req.method === "POST") {
-    admin(u);
+    staff(u);
     const d = await req.json(),
       b = await member(db, u, d.batch_id);
     if (d.action === "cancel" || d.action === "restore") {
@@ -354,12 +714,12 @@ export async function featureRoutes(req, env, u) {
     return json({ ok: true, count: dates.length });
   }
   if (p === "/api/admin/generate-test" && req.method === "POST") {
-    admin(u);
+    staff(u);
     if (!env.AZURE_ENGINE_URL)
       fail(503, "Configure the Azure engine before generating assessments.");
     const d = await req.json(),
       b = await member(db, u, d.batch_id);
-    if (!["daily", "weekly", "monthly", "topic"].includes(d.kind))
+    if (!["daily", "weekly", "monthly"].includes(d.kind))
       fail(400, "Choose daily, weekly or monthly.");
     const ids = [...new Set(d.source_ids || [])];
     if (!ids.length || ids.length > 30)
@@ -373,17 +733,19 @@ export async function featureRoutes(req, env, u) {
         b.course_id,
         b.id,
       );
-      if (
-        !c ||
-        !["notes", "slides", "guide", "recording", "lab"].includes(c.kind)
-      )
+      if (!c || !ELIGIBLE_LEARNING_KINDS.includes(c.kind))
         fail(400, "Only approved learning materials are eligible.");
       selected.push(c);
     }
-    const count = Number(d.count);
+    const spec = calculateAssessmentSpec(selected, d.kind);
+    const count = d.count !== undefined ? Number(d.count) : spec.count;
     if (!Number.isInteger(count) || count < 1 || count > 100)
       fail(400, "Choose 1–100 questions.");
-    const types = [...new Set(d.question_types || ["mcq"])];
+    const types = [
+      ...new Set(
+        d.question_types?.length ? d.question_types : spec.question_types,
+      ),
+    ];
     if (
       !types.length ||
       types.some((t) => !QUESTION_TYPES[t]) ||
@@ -398,10 +760,11 @@ export async function featureRoutes(req, env, u) {
       kind: d.kind,
       count,
       question_types: types,
-      duration: Math.max(1, Math.min(180, Number(d.duration) || 30)),
+      duration: Math.max(1, Math.min(180, Number(d.duration) || spec.duration)),
       course_id: b.course_id,
       topic_order: Math.max(...selected.map((c) => c.topic_order)),
       source_ids: ids,
+      auto_publish: Boolean(d.auto_publish),
     });
     await wakeEngine(env);
     return json({
@@ -409,8 +772,14 @@ export async function featureRoutes(req, env, u) {
       message: "Generation queued. Review the draft before publishing.",
     });
   }
+  if (p === "/api/admin/trigger-scheduled-tests" && req.method === "POST") {
+    staff(u);
+    const d = await req.json();
+    const outcome = await scheduleAssessmentsForCampus(db, env, d);
+    return json(outcome);
+  }
   if (p === "/api/admin/extract-sop" && req.method === "POST") {
-    admin(u);
+    staff(u);
     const d = await req.json(),
       b = await member(db, u, d.batch_id);
     const c = await one(
@@ -428,7 +797,7 @@ export async function featureRoutes(req, env, u) {
     return json({ id, dispatched });
   }
   if (p === "/api/admin/apply-roadmap" && req.method === "POST") {
-    admin(u);
+    staff(u);
     const d = await req.json(),
       j = await one(
         db,
@@ -449,7 +818,7 @@ export async function featureRoutes(req, env, u) {
     return json({ ok: true });
   }
   if (p === "/api/admin/job-result" && req.method === "GET") {
-    admin(u);
+    staff(u);
     return json(
       await one(
         db,
@@ -459,7 +828,7 @@ export async function featureRoutes(req, env, u) {
     );
   }
   if (p === "/api/admin/retry-job" && req.method === "POST") {
-    admin(u);
+    staff(u);
     const d = await req.json();
     await run(
       db,
@@ -475,15 +844,23 @@ export async function featureRoutes(req, env, u) {
       "SELECT a.*,t.title,u.name FROM attempts a JOIN tests t ON t.id=a.test_id JOIN users u ON u.id=a.user_id WHERE a.id=?",
       p.split("/").pop(),
     );
-    if (!a || !a.submitted || (u.role !== "admin" && a.user_id !== u.id))
+    if (!a || !a.submitted || (!isStaff(u) && a.user_id !== u.id))
       fail(404, "Result not found.");
     return resultPdf(a);
   }
   return null;
 }
+
 export async function engineRoutes(req, env) {
   const db = env.DB,
     p = new URL(req.url).pathname;
+  if (p === "/api/automation/schedule-assessments" && req.method === "POST") {
+    let body = {};
+    try {
+      body = await req.json();
+    } catch {}
+    return json(await scheduleAssessmentsForCampus(db, env, body));
+  }
   if (p === "/api/automation/groups" && req.method === "GET")
     return json({
       groups: await rows(
@@ -591,17 +968,7 @@ export async function engineRoutes(req, env) {
         "SELECT config FROM batches WHERE id=?",
         s.batch_id,
       );
-      const explicit = JSON.parse(b.config || "{}").submission_folder;
-      const source = await one(
-        db,
-        "SELECT folder_id FROM automation_sources WHERE batch_id=? AND enabled=1",
-        s.batch_id,
-      );
-      payload.folder_id = explicit || source?.folder_id;
-      payload.folder_is_batch_root = !explicit;
-      payload.student_name =
-        (await one(db, "SELECT name FROM users WHERE id=?", s.user_id))?.name ||
-        "Student";
+      payload.folder_id = JSON.parse(b.config || "{}").submission_folder;
       payload.student_id = s.user_id;
       payload.submission_id = s.id;
     }
@@ -647,17 +1014,7 @@ export async function engineRoutes(req, env) {
       result.questions.some((q) => !validQuestion(q))
     )
       fail(400, "Generated questions do not match the requested schema.");
-    const qs = normalizeQuestions(result.questions).map((q) => ({
-      ...q,
-      topic: String(
-        payload.kind === "topic"
-          ? payload.topic
-          : q.topic || payload.topic || "Class materials",
-      ).slice(0, 200),
-      subtopic: String(
-        q.subtopic || q.topic || payload.topic || "Class materials",
-      ).slice(0, 200),
-    }));
+    const qs = normalizeQuestions(result.questions);
     if (
       payload.question_types?.length &&
       payload.question_types.some((type) => !qs.some((q) => q.type === type))
@@ -675,6 +1032,7 @@ export async function engineRoutes(req, env) {
         ))
       )
         fail(409, "Source approval changed.");
+    const publishFlag = payload.auto_publish ? 1 : 0;
     await run(
       db,
       "INSERT INTO tests(id,course_id,title,kind,topic_order,duration,questions,published,batch_id,source_ids,ai_generated) VALUES (?,?,?,?,?,?,?,?,?,?,1) ON CONFLICT(id) DO NOTHING",
@@ -685,7 +1043,7 @@ export async function engineRoutes(req, env) {
       payload.topic_order,
       payload.duration,
       JSON.stringify(qs),
-      payload.automatic && payload.auto_publish ? 1 : 0,
+      publishFlag,
       j.batch_id,
       JSON.stringify(payload.source_ids),
     );
@@ -719,10 +1077,12 @@ export async function engineRoutes(req, env) {
       score += marks;
       return { feedback: text, marks, max_marks: q.marks };
     });
+    const diagnosticSummary = sanitizeSummary(result.summary, qs, feedback);
     await run(
       db,
-      "UPDATE attempts SET feedback=?,score=?,grading_status='complete' WHERE id=?",
+      "UPDATE attempts SET feedback=?,summary=?,score=?,grading_status='complete' WHERE id=?",
       JSON.stringify(feedback),
+      JSON.stringify(diagnosticSummary),
       Math.round(score * 100) / 100,
       j.entity_id,
     );
@@ -748,6 +1108,7 @@ export async function engineRoutes(req, env) {
   );
   return json({ ok: true });
 }
+
 export async function engineFile(req, env) {
   const id = new URL(req.url).searchParams.get("file_id"),
     jobId = new URL(req.url).searchParams.get("job_id"),
@@ -788,6 +1149,7 @@ export async function engineFile(req, env) {
     },
   });
 }
+
 async function resultPdf(a) {
   const doc = await PDFDocument.create(),
     regular = await doc.embedFont(StandardFonts.Helvetica),
@@ -805,7 +1167,7 @@ async function resultPdf(a) {
       font: bold,
       color: rgb(1, 1, 1),
     });
-    page.drawText("LEARNING CAMPUS  |  Assessment report", {
+    page.drawText("LEARNING CAMPUS  |  Diagnostic Assessment Report", {
       x: 38,
       y: 30,
       size: 9,
@@ -839,6 +1201,37 @@ async function resultPdf(a) {
     "Score: " + a.score + " / " + a.total + " | Status: " + a.grading_status,
   );
   text("Submitted: " + a.submitted);
+
+  let summary = {};
+  try {
+    summary = JSON.parse(a.summary || "{}");
+  } catch {}
+  if (Array.isArray(summary.strengths) && summary.strengths.length) {
+    y -= 8;
+    text("Key Strengths", true);
+    for (const item of summary.strengths) {
+      text("- " + item);
+    }
+  }
+  if (Array.isArray(summary.improvements) && summary.improvements.length) {
+    y -= 8;
+    text("Areas for Improvement", true);
+    for (const item of summary.improvements) {
+      text("- " + item);
+    }
+  }
+  if (
+    Array.isArray(summary.recommendations) &&
+    summary.recommendations.length
+  ) {
+    y -= 8;
+    text("Recommended Documentation, Notes & Learning Resources", true);
+    for (const rec of summary.recommendations) {
+      const label = rec.url ? `${rec.title} (${rec.url})` : rec.title;
+      text("- " + label + (rec.description ? ": " + rec.description : ""));
+    }
+  }
+
   const qs = JSON.parse(a.snapshot).questions,
     ans = JSON.parse(a.answers),
     feedback = JSON.parse(a.feedback || "[]");
@@ -865,18 +1258,14 @@ async function resultPdf(a) {
           ? "Correct"
           : "Incorrect",
     );
-    text(
-      feedbackText(feedback[i]) ||
-        q.explanation ||
-        "Review the approved class materials.",
-    );
+    if (q.explanation) text("Explanation: " + q.explanation);
+    if (feedback[i]) text("Feedback: " + feedbackText(feedback[i]));
   });
   return new Response(await doc.save(), {
     headers: {
       "Content-Type": "application/pdf",
-      "Content-Disposition":
-        'attachment; filename="Arks-assessment-result.pdf"',
-      "Cache-Control": "private,no-store",
+      "Content-Disposition": `attachment; filename="arks-result-${a.id}.pdf"`,
+      "Cache-Control": "private, no-store",
     },
   });
 }

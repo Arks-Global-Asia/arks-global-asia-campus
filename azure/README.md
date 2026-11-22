@@ -10,7 +10,7 @@ This package adds an Azure scanner to the existing portal. The portal UI, databa
 
 ```mermaid
 flowchart LR
-  A[Azure timer: 03:00 and 10:00 IST] --> B[Read enabled batch sources from portal]
+  A[Azure timer: every 15 minutes] --> B[Read enabled batch sources from portal]
   B --> C[Azure Storage Queue: one job per batch]
   C --> D[Azure Function: batch scanner]
   M[Azure managed identity] --> T[Google identity federation]
@@ -106,7 +106,7 @@ After a successful smoke test:
 python3 operate.py enable
 ```
 
-This requires a successful smoke verification recorded for the same app within the last 24 hours. The timer runs at 03:00 and 10:00 IST daily (UTC cron: `0 30 4,21 * * *`). `operate.py enable` applies this selected schedule. Observe the first scheduled Azure run, then pause the old ChatGPT task **Import Arks batch materials for approval**, ID `Automation_898ef61c538c819186e2504db6932237`. Leave the PPT/notes/test-generation tasks in their existing state. Neither the old task nor any cloud schedule has been changed by preparing this package.
+This requires a successful smoke verification recorded for the same app within the last 24 hours. The timer runs every 15 minutes (Azure UTC cron; an interval has no time-zone offset issue). Observe the first scheduled Azure run, then pause the old ChatGPT task **Import Arks batch materials for approval**, ID `Automation_898ef61c538c819186e2504db6932237`. Leave the PPT/notes/test-generation tasks in their existing state. Neither the old task nor any cloud schedule has been changed by preparing this package.
 
 Pause/status commands:
 

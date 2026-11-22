@@ -534,7 +534,8 @@ test("Students & Team cleanly separates Students, Trainers & Admins, and Batch G
     assert.deepEqual(subTabs, [
       "Students",
       "Trainers & Admins",
-      "Batch Groups",
+      "Groups & Members",
+      "Create Group",
       "Fees & Payments",
     ]);
 
@@ -553,39 +554,57 @@ test("Students & Team cleanly separates Students, Trainers & Admins, and Batch G
       "Expected Create Trainer / Admin button",
     );
 
-    // Switch to Batch Groups tab -> shows Manage Existing Group & Create New Group modes
-    await settle(() => button("Batch Groups").click());
-    assert.ok(
-      button("Manage Existing Group"),
-      "Expected Manage Existing Group mode button",
+    // Switch to Groups & Members tab -> no duplicate Batch dropdown in .feature-tools header
+    await settle(() => button("Groups & Members").click());
+    assert.equal(
+      document.querySelector(".feature-tools > .row select"),
+      null,
+      "Expected no duplicate Batch dropdown in AdminTools header",
     );
-    assert.ok(
-      button("Create New Group & Add / Invite Students"),
-      "Expected Create New Group & Add / Invite Students mode button",
-    );
-    // Default mode is Manage Existing Group since Evening Cohort Group exists
-    assert.match(document.body.textContent, /Select Existing Group/);
+    assert.match(document.body.textContent, /Selected Group/);
     assert.match(document.body.textContent, /Evening Cohort Group/);
-    assert.match(document.body.textContent, /Add Already-Created Students/);
+    assert.match(document.body.textContent, /Current Group Members/);
+    assert.match(document.body.textContent, /Add Existing Users/);
     assert.match(document.body.textContent, /Rohan Learner/);
+    assert.ok(
+      button("Students only"),
+      "Expected Students only role toggle button",
+    );
+    assert.ok(
+      button("All users (incl. Trainers & Admins)"),
+      "Expected All users role toggle button",
+    );
+    // Toggle All users -> Meera Instructor becomes selectable too
+    await settle(() => button("All users (incl. Trainers & Admins)").click());
+    assert.match(document.body.textContent, /Meera Instructor/);
     assert.match(
       document.body.textContent,
       /Create & Add \/ Invite New Student\(s\)/,
     );
-    assert.match(document.body.textContent, /Current Group Members/);
 
-    // Switch to Create New Group & Add / Invite Students mode
+    // Switch to dedicated Create Group sub-tab
     await settle(() =>
-      button("Create New Group & Add / Invite Students").click(),
+      [...document.querySelectorAll(".admin-tabs button")]
+        .find((b) => b.textContent.trim() === "Create Group")
+        .click(),
     );
+    assert.equal(
+      document.querySelector(".feature-tools > .row select"),
+      null,
+      "Expected no duplicate Batch dropdown in AdminTools header on Create Group tab",
+    );
+    assert.match(document.body.textContent, /Create New Batch Group/);
+    assert.match(document.body.textContent, /Group Name/);
+    assert.match(document.body.textContent, /Add Existing Users \(Optional\)/);
     assert.match(
       document.body.textContent,
-      /Create New Group & Add \/ Invite Students/,
+      /Create \/ Invite New Students \(Optional\)/,
     );
-    assert.match(document.body.textContent, /New Group Name/);
-    assert.match(document.body.textContent, /Add Already-Created Students/);
-    assert.match(document.body.textContent, /Invite \/ Create New Students/);
     assert.match(document.body.textContent, /Rohan Learner/);
+    assert.ok(
+      document.querySelector("form.panel select"),
+      "Expected Batch selector inside Create Group form",
+    );
   } finally {
     globalThis.fetch = originalFetch;
     dom.window.close();

@@ -119,7 +119,7 @@ const ADMIN_WORKSPACES = [
     id: "people",
     label: "Students & Team",
     defaultTab: "students",
-    tabs: ["students", "staff", "access", "payments"],
+    tabs: ["students", "staff", "access", "create_group", "payments"],
   },
   {
     id: "support",
@@ -1476,7 +1476,8 @@ function App() {
       ["submissions", "Lab Reviews"],
       ["students", "Students"],
       ["staff", "Trainers & Admins"],
-      ["access", "Batch Groups"],
+      ["access", "Groups & Members"],
+      ["create_group", "Create Group"],
       ...(isHeadAdmin ? [["payments", "Fees & Payments"]] : []),
       ["tickets", "Student Queries"],
       ["audit", "Activity Log"],
@@ -1605,12 +1606,15 @@ function App() {
       );
     };
 
-    if (["settings", "schedule", "engine", "access"].includes(adminTab))
+    if (
+      ["settings", "schedule", "engine", "access", "create_group"].includes(
+        adminTab,
+      )
+    )
       return (
         <>
           <AdminSubNav />
           <AdminTools
-            key={adminTab}
             tab={adminTab}
             data={a}
             batchId={batchId}
@@ -1620,6 +1624,7 @@ function App() {
               await refresh();
             }}
             edit={edit}
+            onNavigateTab={setAdminTab}
           />
         </>
       );
@@ -2016,7 +2021,7 @@ function App() {
                     className="text-btn"
                     onClick={() => setAdminTab("access")}
                   >
-                    Batch Groups
+                    Groups &amp; Members
                   </button>
                   .
                 </small>
@@ -3224,7 +3229,7 @@ function App() {
             <>
               <p>
                 Create a student account without assigning a batch yet. You can
-                assign students to cohorts anytime in <b>Batch Groups</b>.
+                assign students to cohorts anytime in <b>Groups &amp; Members</b>.
               </p>
               <SimpleForm
                 fields={[

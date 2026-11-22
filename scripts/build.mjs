@@ -22,6 +22,17 @@ await build({
   define: { __ASSETS__: JSON.stringify(assets) },
 });
 await fs.cp("drizzle", "dist/drizzle", { recursive: true });
+await fs.mkdir("api/gateway", { recursive: true });
+await build({
+  entryPoints: ["server/api.js"],
+  bundle: true,
+  format: "esm",
+  platform: "node",
+  target: "node20",
+  outfile: "api/gateway/api-bundle.js",
+});
 console.log(
-  "Built Worker with " + Object.keys(assets).length + " embedded assets.",
+  "Built Worker with " +
+    Object.keys(assets).length +
+    " embedded assets and bundled api/gateway/api-bundle.js.",
 );

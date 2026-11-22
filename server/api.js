@@ -1297,7 +1297,8 @@ async function adminApi(req, db, u, p) {
     if (d.advance_covered !== false && session.batch_id) {
       await run(
         db,
-        "UPDATE batches SET covered=MAX(covered,?) WHERE id=?",
+        "UPDATE batches SET covered=CASE WHEN covered<? THEN ? ELSE covered END WHERE id=?",
+        session.topic_order,
         session.topic_order,
         session.batch_id,
       );

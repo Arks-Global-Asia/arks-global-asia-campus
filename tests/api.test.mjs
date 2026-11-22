@@ -809,3 +809,120 @@ test("test save preserves batch_id/source_ids/ai_generated, supports image resou
     200,
   );
 });
+
+test("Azure SWA Managed Function gateway translates SQLite to PostgreSQL, handles x-ms-original-url and APP_ORIGIN, and maps responses", async () => {
+  const {
+    default: gateway,
+    translateSqliteToPg,
+    buildFetchRequest,
+    PG_SCHEMA_MIGRATIONS,
+  } = await import("../api/gateway/index.js");
+
+  // 1. Verify SQL translator handles INSERT OR IGNORE and ? placeholders outside single quotes
+  assert.equal(
+    translateSqliteToPg(
+      "INSERT OR IGNORE INTO settings (key,value) VALUES ('owner',?)",
+    ),
+    "INSERT INTO settings (key,value) VALUES ('owner',$1) ON CONFLICT DO NOTHING",
+  );
+  assert.equal(
+    translateSqliteToPg(
+      "SELECT * FROM content WHERE title='What is Git?' AND course_id=? AND (batch_id IS NULL OR batch_id=?)",
+    ),
+    "SELECT * FROM content WHERE title='What is Git?' AND course_id=$1 AND (batch_id IS NULL OR batch_id=$2)",
+  );
+  assert.equal(
+    translateSqliteToPg(
+      "INSERT INTO admin_credentials VALUES (?,?,?) ON CONFLICT(user_id) DO UPDATE SET salt=excluded.salt,password_hash=excluded.password_hash",
+    ),
+    "INSERT INTO admin_credentials VALUES ($1,$2,$3) ON CONFLICT(user_id) DO UPDATE SET salt=excluded.salt,password_hash=excluded.password_hash",
+  );
+  assert.ok(PG_SCHEMA_MIGRATIONS.length >= 21);
+
+  // 2. Verify buildFetchRequest preserves x-ms-original-url origin, segments, and query string
+  const fetchReq = buildFetchRequest(
+    {
+      method: "GET",
+      headers: {
+        "x-ms-original-url":
+          "https://student-portal.arksglobalasia.cloud/api/campus?batch=sandbox",
+        host: "internal-functions-host.azurewebsites.net",
+      },
+      query: { batch: "sandbox" },
+    },
+    { bindingData: { segments: "campus" } },
+  );
+  assert.equal(
+    fetchReq.url,
+    "https://student-portal.arksglobalasia.cloud/api/campus?batch=sandbox",
+  );
+
+  // 3. Verify full gateway invocation for /api/auth/config and /api/auth/admin with APP_ORIGIN and x-ms-original-url
+  const { env, call } = await campus();
+  await call(owner, "admin/password", {
+    email: "swa-head@arks.test",
+    password: "swa-head-secure-password-2026",
+    name: "SWA Head Admin",
+    role: "admin",
+  });
+
+  const configCtx = {
+    bindingData: { segments: "auth/config" },
+    log: { error: () => {} },
+  };
+  await gateway(
+    configCtx,
+    {
+      method: "GET",
+      headers: {
+        "x-ms-original-url":
+          "https://student-portal.arksglobalasia.cloud/api/auth/config",
+        host: "internal-swa.azurewebsites.net",
+      },
+    },
+    {
+      ...env,
+      GOOGLE_CLIENT_ID: "gid",
+      GOOGLE_CLIENT_SECRET: "gsecret",
+      APP_ORIGIN: "https://student-portal.arksglobalasia.cloud",
+    },
+  );
+  assert.equal(configCtx.res.status, 200);
+  const cfgJson = JSON.parse(configCtx.res.body.toString("utf8"));
+  assert.equal(cfgJson.google_ready, true);
+  assert.equal(
+    cfgJson.public_origin,
+    "https://student-portal.arksglobalasia.cloud",
+  );
+
+  const loginCtx = {
+    bindingData: { segments: "auth/admin" },
+    log: { error: () => {} },
+  };
+  await gateway(
+    loginCtx,
+    {
+      method: "POST",
+      headers: {
+        "x-ms-original-url":
+          "https://student-portal.arksglobalasia.cloud/api/auth/admin",
+        Origin: "https://student-portal.arksglobalasia.cloud",
+        "Content-Type": "application/json",
+      },
+      rawBody: JSON.stringify({
+        email: "swa-head@arks.test",
+        password: "swa-head-secure-password-2026",
+      }),
+    },
+    {
+      ...env,
+      LOCAL_DEV_OWNER: undefined,
+      APP_ORIGIN: "https://student-portal.arksglobalasia.cloud",
+    },
+  );
+  assert.equal(loginCtx.res.status, 200);
+  const loginBody = JSON.parse(loginCtx.res.body.toString("utf8"));
+  assert.equal(loginBody.ok, true);
+  assert.equal(loginBody.role, "admin");
+  assert.match(String(loginCtx.res.headers["Set-Cookie"] || ""), /arks_session=/);
+});

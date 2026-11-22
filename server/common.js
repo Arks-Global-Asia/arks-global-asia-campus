@@ -106,6 +106,16 @@ function originFromHostHeader(hostHeader, fallbackProtocol = "https:") {
   return normalizeOrigin(`${proto}//${host}`);
 }
 
+export function configuredOrigins(env = {}) {
+  return [
+    env?.PUBLIC_ORIGIN || "",
+    env?.APP_ORIGIN || "",
+    ...(String(env?.ALLOWED_ORIGINS || "").split(",")),
+  ]
+    .map(normalizeOrigin)
+    .filter(Boolean);
+}
+
 export function isAllowedOrigin(originStr, req, env = {}) {
   const candidate = normalizeOrigin(originStr);
   if (!candidate) return false;
@@ -131,18 +141,15 @@ export function isAllowedOrigin(originStr, req, env = {}) {
     return false;
   }
 
-  const dynamicList = [
-    env?.PUBLIC_ORIGIN || "",
-    ...(String(env?.ALLOWED_ORIGINS || "").split(",")),
-  ]
-    .map(normalizeOrigin)
-    .filter(Boolean);
+  const dynamicList = configuredOrigins(env);
   if (dynamicList.includes(candidate)) return true;
 
   if (req) {
     try {
       const reqUrl = new URL(req.url);
       if (candidate === reqUrl.origin) return true;
+      const msOrig = normalizeOrigin(req.headers?.get("x-ms-original-url"));
+      if (msOrig && candidate === msOrig) return true;
       const fwdProto =
         req.headers?.get("x-forwarded-proto")?.split(",")[0]?.trim() ||
         reqUrl.protocol.replace(":", "");
@@ -178,10 +185,13 @@ export function resolvePublicOrigin(req, env = {}) {
   const proto = fwdProto === "http" ? "http:" : "https:";
 
   const candidates = [
+    normalizeOrigin(req.headers?.get("x-ms-original-url")),
     originFromHostHeader(req.headers?.get("x-forwarded-host"), proto),
     originFromHostHeader(req.headers?.get("x-original-host"), proto),
     normalizeOrigin(req.headers?.get("Origin")),
     normalizeOrigin(env?.PUBLIC_ORIGIN),
+    normalizeOrigin(env?.APP_ORIGIN),
+    ...configuredOrigins(env),
     reqUrl.origin,
   ].filter(Boolean);
 

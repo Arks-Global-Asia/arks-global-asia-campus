@@ -27,8 +27,11 @@ const fail = (s, m) => {
   },
   id = () => crypto.randomUUID(),
   now = () => new Date().toISOString();
-const json = (data, status = 200) =>
-  Response.json(data, { status, headers: { "Cache-Control": "no-store" } });
+const json = (data, status = 200, extraHeaders = {}) =>
+  Response.json(data, {
+    status,
+    headers: { "Cache-Control": "no-store", ...extraHeaders },
+  });
 const rows = async (db, sql, ...args) =>
   (
     await db
@@ -167,6 +170,9 @@ export async function api(req, env) {
     if (e instanceof SyntaxError)
       e = new HttpError(400, "Invalid request data.");
     if (!e.status) console.error(e);
+    const headers = !e.status
+      ? { "X-Arks-Err": String(e?.code || e?.name || "ERR").slice(0, 32) }
+      : {};
     return json(
       {
         error: e.status
@@ -174,6 +180,7 @@ export async function api(req, env) {
           : "The request could not be completed. Please try again.",
       },
       e.status || 500,
+      headers,
     );
   }
 }

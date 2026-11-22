@@ -86986,7 +86986,10 @@ var fail3 = (s, m) => {
 };
 var id = () => crypto.randomUUID();
 var now3 = () => (/* @__PURE__ */ new Date()).toISOString();
-var json2 = (data, status = 200) => Response.json(data, { status, headers: { "Cache-Control": "no-store" } });
+var json2 = (data, status = 200, extraHeaders = {}) => Response.json(data, {
+  status,
+  headers: { "Cache-Control": "no-store", ...extraHeaders }
+});
 var rows2 = async (db, sql, ...args) => (await db.prepare(sql).bind(...args).all()).results;
 var one3 = (db, sql, ...args) => db.prepare(sql).bind(...args).first();
 var run3 = (db, sql, ...args) => db.prepare(sql).bind(...args).run();
@@ -87094,11 +87097,13 @@ async function api(req, env) {
     if (e instanceof SyntaxError)
       e = new HttpError(400, "Invalid request data.");
     if (!e.status) console.error(e);
+    const headers = !e.status ? { "X-Arks-Err": String(e?.code || e?.name || "ERR").slice(0, 32) } : {};
     return json2(
       {
         error: e.status ? e.message : "The request could not be completed. Please try again."
       },
-      e.status || 500
+      e.status || 500,
+      headers
     );
   }
 }
@@ -88648,6 +88653,10 @@ function createPgDb(env = process.env) {
         ssl: { rejectUnauthorized: false },
         options: `-c search_path=${schema},public`
       });
+      cachedPool.on("error", () => {
+        cachedPool = null;
+        initPromise = null;
+      });
       cachedPool.on("connect", (client) => {
         client.query(`SET search_path TO "${schema}", public`).catch(() => {
         });
@@ -88658,8 +88667,9 @@ function createPgDb(env = process.env) {
     const pool = cachedPool;
     if (!initPromise) {
       initPromise = (async () => {
-        const client = await pool.connect();
+        let client;
         try {
+          client = await pool.connect();
           try {
             await client.query(`CREATE SCHEMA IF NOT EXISTS "${schema}"`);
           } catch {
@@ -88672,10 +88682,13 @@ function createPgDb(env = process.env) {
             }
           }
         } catch (err) {
+          pool.end().catch(() => {
+          });
           initPromise = null;
+          cachedPool = null;
           throw err;
         } finally {
-          client.release();
+          if (client) client.release();
         }
       })();
     }

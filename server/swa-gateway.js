@@ -362,6 +362,10 @@ export function createPgDb(env = process.env) {
         ssl: { rejectUnauthorized: false },
         options: `-c search_path=${schema},public`,
       });
+      cachedPool.on("error", () => {
+        cachedPool = null;
+        initPromise = null;
+      });
       cachedPool.on("connect", (client) => {
         client.query(`SET search_path TO "${schema}", public`).catch(() => {});
       });
@@ -371,8 +375,9 @@ export function createPgDb(env = process.env) {
     const pool = cachedPool;
     if (!initPromise) {
       initPromise = (async () => {
-        const client = await pool.connect();
+        let client;
         try {
+          client = await pool.connect();
           try {
             await client.query(`CREATE SCHEMA IF NOT EXISTS "${schema}"`);
           } catch {}
@@ -383,10 +388,12 @@ export function createPgDb(env = process.env) {
             } catch {}
           }
         } catch (err) {
+          pool.end().catch(() => {});
           initPromise = null;
+          cachedPool = null;
           throw err;
         } finally {
-          client.release();
+          if (client) client.release();
         }
       })();
     }

@@ -931,3 +931,108 @@ test("Azure SWA Managed Function gateway translates SQLite to PostgreSQL, handle
   assert.equal(loginBody.role, "admin");
   assert.match(String(loginCtx.res.headers["Set-Cookie"] || ""), /arks_session=/);
 });
+
+test("campus content includes file_name and file_mime, and /api/files serves PDF/image/SVG/PPTX with proper inline/attachment headers", async () => {
+  const { env, call } = await campus();
+  async function upload(name, body, type) {
+    const form = new FormData();
+    form.set("file", new File([body], name, { type }));
+    const res = await api(
+      new Request("https://campus.test/api/upload", {
+        method: "POST",
+        headers: {
+          "oai-authenticated-user-id": owner.id,
+          "oai-authenticated-user-email": owner.email,
+        },
+        body: form,
+      }),
+      env,
+    );
+    assert.equal(res.status, 200);
+    return await res.json();
+  }
+
+  const pdfFile = await upload("k8s-slides.pdf", "%PDF-1.4", "application/pdf");
+  const pngFile = await upload("arch-diagram.png", "pngbytes", "image/png");
+  const svgFile = await upload(
+    "flow.svg",
+    "<svg xmlns='http://www.w3.org/2000/svg'></svg>",
+    "image/svg+xml",
+  );
+  const pptxFile = await upload(
+    "deck.pptx",
+    "pptxbytes",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  );
+
+  await call(owner, "admin/save", {
+    entity: "content",
+    values: {
+      course_id: "devops",
+      batch_id: "sandbox",
+      kind: "slides",
+      title: "Kubernetes Slides",
+      topic: "Kubernetes",
+      topic_order: 2,
+      file_id: pdfFile.id,
+      published: 1,
+    },
+  });
+
+  const campusRes = await call(owner, "campus?batch=sandbox");
+  const slideRow = campusRes.data.content.find(
+    (c) => c.title === "Kubernetes Slides",
+  );
+  assert.ok(slideRow);
+  assert.equal(slideRow.file_name, "k8s-slides.pdf");
+  assert.equal(slideRow.file_mime, "application/pdf");
+
+  const fetchFile = (fid, query = "") =>
+    api(
+      new Request(`https://campus.test/api/files/${fid}${query}`, {
+        headers: {
+          "oai-authenticated-user-id": owner.id,
+          "oai-authenticated-user-email": owner.email,
+        },
+      }),
+      env,
+    );
+
+  // Inline PDF: application/pdf, inline, NO sandbox in CSP, has frame-ancestors 'self'
+  const pdfInline = await fetchFile(pdfFile.id, "?inline=1");
+  assert.equal(pdfInline.status, 200);
+  assert.equal(pdfInline.headers.get("Content-Type"), "application/pdf");
+  assert.match(pdfInline.headers.get("Content-Disposition") || "", /^inline;/);
+  const pdfCsp = pdfInline.headers.get("Content-Security-Policy") || "";
+  assert.doesNotMatch(pdfCsp, /sandbox/);
+  assert.match(pdfCsp, /frame-ancestors 'self'/);
+
+  // Download PDF (no inline): attachment
+  const pdfDownload = await fetchFile(pdfFile.id);
+  assert.match(
+    pdfDownload.headers.get("Content-Disposition") || "",
+    /^attachment;/,
+  );
+
+  // Inline PNG: image/png, inline
+  const pngInline = await fetchFile(pngFile.id, "?inline=1");
+  assert.equal(pngInline.headers.get("Content-Type"), "image/png");
+  assert.match(pngInline.headers.get("Content-Disposition") || "", /^inline;/);
+
+  // Inline SVG: image/svg+xml, inline, MUST keep sandbox CSP
+  const svgInline = await fetchFile(svgFile.id, "?inline=1");
+  assert.equal(svgInline.headers.get("Content-Type"), "image/svg+xml");
+  assert.match(svgInline.headers.get("Content-Disposition") || "", /^inline;/);
+  assert.match(
+    svgInline.headers.get("Content-Security-Policy") || "",
+    /sandbox/,
+  );
+
+  // PPTX: proper presentation MIME and attachment disposition
+  const pptxRes = await fetchFile(pptxFile.id);
+  assert.equal(
+    pptxRes.headers.get("Content-Type"),
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  );
+  assert.match(pptxRes.headers.get("Content-Disposition") || "", /^attachment;/);
+});

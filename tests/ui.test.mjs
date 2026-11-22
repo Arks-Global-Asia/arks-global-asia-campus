@@ -175,4 +175,259 @@ test("repository hygiene removes legacy OpenAI hosting clutter and includes Azur
   const swaConfig = JSON.parse(swaRaw);
   assert.equal(swaConfig.navigationFallback.rewrite, "/index.html");
   assert.equal(swaConfig.globalHeaders["X-Content-Type-Options"], "nosniff");
+  assert.match(
+    swaConfig.globalHeaders["Content-Security-Policy"] || "",
+    /frame-src 'self'/,
+  );
+});
+
+test("content inbox file-type filters, bulk select/approve/reject, and student inline image/PDF reader work in DOM", async () => {
+  const dom = new JSDOM('<html><body><div id="root"></div></body></html>', {
+    url: "https://campus.test",
+  });
+  Object.assign(globalThis, {
+    window: dom.window,
+    document: dom.window.document,
+    HTMLElement: dom.window.HTMLElement,
+    sessionStorage: dom.window.sessionStorage,
+    IS_REACT_ACT_ENVIRONMENT: true,
+  });
+  Object.defineProperty(globalThis, "navigator", {
+    value: dom.window.navigator,
+    configurable: true,
+  });
+  const env = {
+    DB: await database(),
+    BUCKET: memoryBucket(),
+    LOCAL_DEV_OWNER: "true",
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (path, options = {}) => {
+    const headers = new Headers(options.headers);
+    headers.set("oai-authenticated-user-id", "owner");
+    headers.set("oai-authenticated-user-email", "owner@arks.test");
+    headers.set("oai-authenticated-user-full-name", "Campus Owner");
+    return api(
+      new Request(new URL(path, "https://campus.test"), {
+        ...options,
+        headers,
+      }),
+      env,
+    );
+  };
+  await fs.mkdir(".local", { recursive: true });
+  await build({
+    entryPoints: ["src/main.jsx"],
+    bundle: true,
+    format: "esm",
+    platform: "node",
+    outfile: ".local/ui-test-inbox.mjs",
+    packages: "external",
+    loader: { ".css": "empty" },
+  });
+  const { act } = await import("react");
+  async function settle(fn = () => {}) {
+    await act(async () => {
+      await fn();
+      await new Promise((r) => setTimeout(r, 40));
+    });
+  }
+  try {
+    // Bootstrap & seed inbox items + published image & PDF files
+    await globalThis.fetch("/api/bootstrap");
+    const now = new Date().toISOString();
+    await env.BUCKET.put("img-file-1", new TextEncoder().encode("pngdata"));
+    await env.BUCKET.put("pdf-file-1", new TextEncoder().encode("%PDF-1.4"));
+    await env.DB.prepare(
+      "INSERT INTO files (id,owner_id,name,mime,size,created) VALUES (?,?,?,?,?,?)",
+    )
+      .bind("img-file-1", "owner", "k8s-arch.png", "image/png", 7, now)
+      .run();
+    await env.DB.prepare(
+      "INSERT INTO files (id,owner_id,name,mime,size,created) VALUES (?,?,?,?,?,?)",
+    )
+      .bind("pdf-file-1", "owner", "docker-notes.pdf", "application/pdf", 8, now)
+      .run();
+    await env.DB.prepare(
+      "INSERT INTO content (id,course_id,batch_id,kind,title,topic,topic_order,body,url,starts_at,duration,file_id,published,created) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    )
+      .bind(
+        "c-img-1",
+        "devops",
+        "sandbox",
+        "image",
+        "K8s Architecture Diagram",
+        "Kubernetes",
+        2,
+        "Cluster topology diagram",
+        "",
+        "",
+        60,
+        "img-file-1",
+        1,
+        now,
+      )
+      .run();
+    await env.DB.prepare(
+      "INSERT INTO content (id,course_id,batch_id,kind,title,topic,topic_order,body,url,starts_at,duration,file_id,published,created) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    )
+      .bind(
+        "c-pdf-1",
+        "devops",
+        "sandbox",
+        "notes",
+        "Docker Deep Dive PDF",
+        "Docker",
+        2,
+        "Full Docker class notes",
+        "",
+        "",
+        60,
+        "pdf-file-1",
+        1,
+        now,
+      )
+      .run();
+    await env.DB.prepare(
+      "INSERT INTO automation_sources (id,batch_id,folder_input,folder_id,enabled,config,created) VALUES (?,?,?,?,?,?,?)",
+    )
+      .bind("src-1", "sandbox", "DevOps Folder", "fld_1234567890", 1, "{}", now)
+      .run();
+    await env.DB.prepare(
+      "INSERT INTO import_items (id,source_id,generation,drive_file_id,revision,kind,title,topic,topic_order,source_path,source_url,mime,size,status,class_date,created) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    )
+      .bind(
+        "imp-1",
+        "src-1",
+        1,
+        "drv_img_123456",
+        "v1",
+        "image",
+        "VPC Diagram.png",
+        "Networking",
+        1,
+        "batch/images",
+        "https://drive.google.com/file/d/drv_img_123456/view",
+        "image/png",
+        100,
+        "pending",
+        "2026-11-22",
+        now,
+      )
+      .run();
+    await env.DB.prepare(
+      "INSERT INTO import_items (id,source_id,generation,drive_file_id,revision,kind,title,topic,topic_order,source_path,source_url,mime,size,status,class_date,created) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    )
+      .bind(
+        "imp-2",
+        "src-1",
+        1,
+        "drv_pdf_123456",
+        "v1",
+        "notes",
+        "Terraform Guide.pdf",
+        "Terraform",
+        1,
+        "batch/notes",
+        "https://drive.google.com/file/d/drv_pdf_123456/view",
+        "application/pdf",
+        200,
+        "pending",
+        "2026-11-22",
+        now,
+      )
+      .run();
+
+    await settle(() =>
+      import("../.local/ui-test-inbox.mjs?test=" + Date.now()),
+    );
+    const closeBtn = document.querySelector('[aria-label="Close dialog"]');
+    if (closeBtn) await settle(() => closeBtn.click());
+    const button = (s) =>
+      [...document.querySelectorAll("button")].find(
+        (b) => b.textContent.trim() === s,
+      );
+    const skipBtn = button("Skip");
+    if (skipBtn) await settle(() => skipBtn.click());
+
+    // Open Classroom & Content -> Content inbox
+    await settle(() => button("Classroom & Content").click());
+    assert.match(document.body.textContent, /VPC Diagram\.png/);
+    assert.match(document.body.textContent, /Terraform Guide\.pdf/);
+
+    // File type filter select exists with expected options
+    const selects = [...document.querySelectorAll(".inbox-filters select")];
+    const fileTypeSelect = selects.find((s) =>
+      [...s.options].some((o) => o.value === "pdf"),
+    );
+    assert.ok(fileTypeSelect, "Expected File type filter select");
+
+    // Select all visible -> shows Approve Selected & Reject Selected
+    await settle(() => button("Select all visible").click());
+    assert.ok(
+      [...document.querySelectorAll("button")].some((b) =>
+        b.textContent.includes("Approve Selected (2)"),
+      ),
+      "Expected Approve Selected (2) button",
+    );
+    const rejectBtn = [...document.querySelectorAll("button")].find((b) =>
+      b.textContent.includes("Reject Selected (2)"),
+    );
+    assert.ok(rejectBtn, "Expected Reject Selected (2) button");
+
+    // Click Reject Selected (2)
+    await settle(() => rejectBtn.click());
+    assert.match(document.body.textContent, /Your review queue is clear/);
+    const rejRows = (
+      await env.DB.prepare(
+        "SELECT id,status FROM import_items WHERE id IN ('imp-1','imp-2')",
+      ).all()
+    ).results;
+    assert.equal(rejRows.length, 2);
+    assert.ok(rejRows.every((r) => r.status === "rejected"));
+
+    // Switch to Student View -> Learning library -> verify Inline Image & PDF readers
+    await settle(() => button("Switch to student view").click());
+    const skip2 = button("Skip");
+    if (skip2) await settle(() => skip2.click());
+    await settle(() =>
+      [...document.querySelectorAll("nav button")]
+        .find((b) => b.textContent.includes("Learning library"))
+        .click(),
+    );
+
+    // Open Image resource -> inline image preview + Open Full Image + Download Image
+    const imgCard = [...document.querySelectorAll(".resource-card")].find((el) =>
+      el.textContent.includes("K8s Architecture Diagram"),
+    );
+    assert.ok(imgCard, "Expected K8s Architecture Diagram card in Learning library");
+    await settle(() => imgCard.click());
+    const previewImg = document.querySelector("img.inline-preview-img");
+    assert.ok(previewImg, "Expected inline image viewer");
+    assert.match(previewImg.getAttribute("src") || "", /\/api\/files\/img-file-1\?inline=1/);
+    assert.match(document.body.textContent, /Open Full Image/);
+    assert.match(document.body.textContent, /Download Image/);
+    await settle(() =>
+      document.querySelector('[aria-label="Close dialog"]').click(),
+    );
+
+    // Open PDF resource -> inline PDF iframe + Open PDF in New Tab + Download PDF
+    const pdfCard = [...document.querySelectorAll(".resource-card")].find((el) =>
+      el.textContent.includes("Docker Deep Dive PDF"),
+    );
+    assert.ok(pdfCard, "Expected Docker Deep Dive PDF card in Learning library");
+    await settle(() => pdfCard.click());
+    const previewFrame = document.querySelector("iframe.inline-preview-frame");
+    assert.ok(previewFrame, "Expected inline PDF iframe reader");
+    assert.match(
+      previewFrame.getAttribute("src") || "",
+      /\/api\/files\/pdf-file-1\?inline=1/,
+    );
+    assert.match(document.body.textContent, /Open PDF in New Tab/);
+    assert.match(document.body.textContent, /Download PDF/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    dom.window.close();
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+  }
 });

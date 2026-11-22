@@ -399,3 +399,69 @@ test("images, resource_creation guides, yaml/sh scripts, exclusion filters, cate
   );
   assert.equal(overridden.status, 200);
 });
+
+test("bulk reject endpoint enforces staff auth, validates input, rejects pending/restricted items and records audit", async () => {
+  const { env, call, source } = await setup();
+  const r = (await call("automation/claim", { source_id: source })).data;
+  const ing = await call("automation/ingest", {
+    run_id: r.run_id,
+    items: [
+      item({
+        drive_file_id: "file_rej_12345",
+        url: "https://drive.google.com/file/d/file_rej_12345/view",
+        name: "Day10_Old_Slide.pptx",
+        source_path: "batch/slides",
+        mime: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      }),
+      item({
+        drive_file_id: "file_rej_67890",
+        url: "https://drive.google.com/file/d/file_rej_67890/view",
+        name: "Day10_Answers.pdf",
+        source_path: "batch/lab_answers",
+        mime: "application/pdf",
+      }),
+    ],
+  });
+  assert.equal(ing.status, 200);
+  const ids = ing.data.items.map((x) => x.id);
+
+  // Student cannot call reject-batch
+  const studentRes = await call(
+    "admin/automation/reject-batch",
+    { item_ids: ids },
+    { id: "stu1", email: "stu1@arks.test" },
+  );
+  assert.equal(studentRes.status, 403);
+
+  // Empty item_ids rejected with 400
+  const emptyRes = await call(
+    "admin/automation/reject-batch",
+    { item_ids: [] },
+    owner,
+  );
+  assert.equal(emptyRes.status, 400);
+
+  // Staff bulk rejects both pending and restricted items
+  const res = await call(
+    "admin/automation/reject-batch",
+    { item_ids: ids, note: "Outdated deck and answer key" },
+    owner,
+  );
+  assert.equal(res.status, 200);
+  assert.equal(res.data.ok, true);
+  assert.equal(res.data.rejected_count, 2);
+
+  const state = (await call("admin/automation/state", null, owner)).data;
+  for (const id of ids) {
+    const found = state.items.find((x) => x.id === id);
+    assert.equal(found.status, "rejected");
+    assert.equal(found.review_note, "Outdated deck and answer key");
+    assert.equal(found.reviewed_by, owner.id);
+  }
+
+  const auditRow = await env.DB.prepare(
+    "SELECT * FROM audit WHERE action='reject_batch:import' ORDER BY created DESC LIMIT 1",
+  ).first();
+  assert.ok(auditRow);
+  assert.equal(auditRow.actor, owner.id);
+});

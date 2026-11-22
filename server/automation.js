@@ -509,7 +509,7 @@ export async function adminAutomation(req, env, u) {
       );
     let candidates = [];
     if (Array.isArray(d.item_ids) && d.item_ids.length) {
-      for (const itemId of d.item_ids.slice(0, 100)) {
+      for (const itemId of [...new Set(d.item_ids)].slice(0, 100)) {
         const row = await one(
           db,
           "SELECT i.*,s.batch_id,s.generation current_generation,b.course_id FROM import_items i JOIN automation_sources s ON s.id=i.source_id JOIN batches b ON b.id=s.batch_id WHERE i.id=?",
@@ -620,6 +620,55 @@ export async function adminAutomation(req, env, u) {
       approved_count: contentIds.length,
       content_ids: contentIds,
     });
+  }
+  if (p.endsWith("/reject-batch")) {
+    if (
+      !Array.isArray(d.item_ids) ||
+      !d.item_ids.length ||
+      d.item_ids.length > 100
+    )
+      fail(400, "Select between 1 and 100 items to reject.");
+    const uniqueIds = [
+      ...new Set(d.item_ids.filter((id) => typeof id === "string" && id.trim())),
+    ];
+    if (!uniqueIds.length)
+      fail(400, "Select at least one valid item to reject.");
+    const eligible = [];
+    for (const itemId of uniqueIds) {
+      const row = await one(
+        db,
+        "SELECT id,status FROM import_items WHERE id=? AND status IN ('pending','restricted')",
+        itemId,
+      );
+      if (row) eligible.push(row);
+    }
+    const reviewNote = String(d.note || "Bulk rejected").slice(0, 2000);
+    const timestamp = now();
+    if (eligible.length) {
+      await db.batch([
+        ...eligible.map((row) =>
+          db
+            .prepare(
+              "UPDATE import_items SET status='rejected',review_note=?,reviewed_by=?,reviewed_at=? WHERE id=? AND status IN ('pending','restricted')",
+            )
+            .bind(reviewNote, u.id, timestamp, row.id),
+        ),
+        db
+          .prepare(
+            "INSERT INTO audit (id,actor,action,entity,created) VALUES (?,?,?,?,?)",
+          )
+          .bind(
+            uuid(),
+            u.id,
+            "reject_batch:import",
+            `${eligible.length} items`,
+            timestamp,
+          ),
+      ]);
+    } else {
+      await audit(db, u.id, "reject_batch:import", "0 items");
+    }
+    return response({ ok: true, rejected_count: eligible.length });
   }
   fail(404, "Automation action not found.");
 }

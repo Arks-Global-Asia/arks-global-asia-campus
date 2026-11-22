@@ -38,10 +38,12 @@ export default {
     h.set("X-Content-Type-Options", "nosniff");
     h.set("Referrer-Policy", "strict-origin-when-cross-origin");
     h.set("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
-    h.set(
-      "Content-Security-Policy",
-      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'",
-    );
+    if (!h.has("Content-Security-Policy")) {
+      h.set(
+        "Content-Security-Policy",
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; frame-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'",
+      );
+    }
     return new Response(res.body, { status: res.status, headers: h });
   },
 };

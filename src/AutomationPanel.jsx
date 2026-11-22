@@ -64,6 +64,62 @@ const studentKindOptions = [
   ["test_link", "External Google Form Test"],
 ];
 
+const fileTypeOptions = [
+  ["all", "All file types"],
+  ["image", "Images (PNG / JPG / WEBP / SVG)"],
+  ["slides", "Presentations (PPT / PPTX / Slides)"],
+  ["pdf", "PDFs"],
+  ["notes", "Notes & Docs (DOCX / MD / TXT / Scripts)"],
+  ["lab", "Practice Labs"],
+  ["recording", "Recordings"],
+  ["guide", "Guides & SOPs"],
+  ["private", "Instructor Only / Restricted"],
+];
+
+function matchesFileType(i, fileType) {
+  if (fileType === "all") return true;
+  const mime = String(i.mime || "").toLowerCase();
+  const text = `${i.title || ""} ${i.source_path || ""}`.toLowerCase();
+  switch (fileType) {
+    case "image":
+      return (
+        i.kind === "image" ||
+        mime.startsWith("image/") ||
+        /\.(png|jpe?g|webp|svg|gif)\b/.test(text)
+      );
+    case "slides":
+      return (
+        i.kind === "slides" ||
+        mime === "application/vnd.google-apps.presentation" ||
+        mime.includes("presentation") ||
+        mime.includes("powerpoint") ||
+        /\.pptx?\b/.test(text)
+      );
+    case "pdf":
+      return mime === "application/pdf" || /\.pdf\b/.test(text);
+    case "notes":
+      return (
+        i.kind === "notes" ||
+        mime === "application/vnd.google-apps.document" ||
+        /\.(docx?|md|txt|ya?ml|sh|py|json|csv)\b/.test(text)
+      );
+    case "lab":
+      return i.kind === "lab";
+    case "recording":
+      return (
+        i.kind === "recording" ||
+        mime.startsWith("video/") ||
+        mime.startsWith("audio/")
+      );
+    case "guide":
+      return i.kind === "guide" || i.kind === "sop";
+    case "private":
+      return i.kind === "private" || i.status === "restricted";
+    default:
+      return true;
+  }
+}
+
 const statusTone = (s) =>
   ["ready", "published", "succeeded"].includes(s)
     ? "green"
@@ -106,6 +162,7 @@ export default function AutomationPanel({ batches, onPublished }) {
     [filter, setFilter] = useState("pending"),
     [batch, setBatch] = useState("all"),
     [classDate, setClassDate] = useState("all"),
+    [fileType, setFileType] = useState("all"),
     [selectedIds, setSelectedIds] = useState([]),
     [bunchSafe, setBunchSafe] = useState(true),
     [source, setSource] = useState(null),
@@ -125,6 +182,9 @@ export default function AutomationPanel({ batches, onPublished }) {
   useEffect(() => {
     load();
   }, []);
+  useEffect(() => {
+    setSelectedIds([]);
+  }, [batch, classDate, filter, fileType]);
 
   async function action(fn, success) {
     setBusy(true);
@@ -172,8 +232,27 @@ export default function AutomationPanel({ batches, onPublished }) {
     (i) =>
       (batch === "all" || i.batch_id === batch) &&
       (classDate === "all" || i.class_date === classDate) &&
-      (filter === "all" || i.status === filter),
+      (filter === "all" || i.status === filter) &&
+      matchesFileType(i, fileType),
   );
+
+  const selectableItems = items.filter(
+    (i) => i.status === "pending" || i.status === "restricted",
+  );
+  const selectedItems = selectableItems.filter((i) =>
+    selectedIds.includes(i.id),
+  );
+  const selectedPendingIds = selectedItems
+    .filter(
+      (i) =>
+        i.status === "pending" &&
+        i.kind !== "private" &&
+        i.kind !== "test_link",
+    )
+    .map((i) => i.id);
+  const allVisibleSelected =
+    selectableItems.length > 0 &&
+    selectableItems.every((i) => selectedIds.includes(i.id));
 
   const bunchEligible = items.filter(
     (i) =>
@@ -463,16 +542,29 @@ export default function AutomationPanel({ batches, onPublished }) {
                 ))}
               </select>
             </label>
+            <label>
+              File type
+              <select
+                value={fileType}
+                onChange={(e) => setFileType(e.target.value)}
+              >
+                {fileTypeOptions.map(([v, l]) => (
+                  <option key={v} value={v}>
+                    {l}
+                  </option>
+                ))}
+              </select>
+            </label>
             <span className="muted">{items.length} items · newest first</span>
           </div>
 
-          {bunchEligible.length > 0 && (
+          {selectableItems.length > 0 && (
             <section className="panel bunch-approval-bar">
               <div className="row between wrap gap">
                 <div>
                   <h3>
-                    Single-Click Bunch / Day Approval ({bunchEligible.length}{" "}
-                    ready)
+                    Bulk Review & Single-Click Approval ({selectableItems.length}{" "}
+                    reviewable · {bunchEligible.length} ready to publish)
                   </h3>
                   <label className="checkbox-row">
                     <input
@@ -485,46 +577,89 @@ export default function AutomationPanel({ batches, onPublished }) {
                   </label>
                 </div>
                 <div className="row gap wrap">
-                  {selectedIds.length > 0 && (
+                  <button
+                    className="button secondary"
+                    type="button"
+                    disabled={busy}
+                    onClick={() =>
+                      setSelectedIds(
+                        allVisibleSelected
+                          ? []
+                          : selectableItems.map((i) => i.id),
+                      )
+                    }
+                  >
+                    {allVisibleSelected
+                      ? "Clear selection"
+                      : "Select all visible"}
+                  </button>
+                  {selectedItems.length > 0 && (
+                    <>
+                      <button
+                        className="button"
+                        type="button"
+                        disabled={
+                          busy || !bunchSafe || selectedPendingIds.length === 0
+                        }
+                        onClick={() =>
+                          action(async () => {
+                            const r = await request("approve-batch", {
+                              item_ids: selectedPendingIds,
+                              confirmed_student_safe: bunchSafe,
+                            });
+                            setSelectedIds([]);
+                            return {
+                              message: `Approved and published ${r.approved_count} selected materials.`,
+                            };
+                          })
+                        }
+                      >
+                        <Check size={15} /> Approve Selected (
+                        {selectedPendingIds.length})
+                      </button>
+                      <button
+                        className="button danger"
+                        type="button"
+                        disabled={busy}
+                        onClick={() =>
+                          action(async () => {
+                            const r = await request("reject-batch", {
+                              item_ids: selectedItems.map((i) => i.id),
+                              note: "Rejected in bulk review",
+                            });
+                            setSelectedIds([]);
+                            return {
+                              message: `Rejected ${r.rejected_count} selected items.`,
+                            };
+                          })
+                        }
+                      >
+                        <X size={15} /> Reject Selected ({selectedItems.length})
+                      </button>
+                    </>
+                  )}
+                  {bunchEligible.length > 0 && (
                     <button
                       className="button secondary"
+                      type="button"
                       disabled={busy || !bunchSafe}
                       onClick={() =>
                         action(async () => {
                           const r = await request("approve-batch", {
-                            item_ids: selectedIds,
+                            item_ids: bunchEligible.map((i) => i.id),
                             confirmed_student_safe: bunchSafe,
                           });
                           setSelectedIds([]);
                           return {
-                            message: `Approved and published ${r.approved_count} selected materials.`,
+                            message: `Approved and published ${r.approved_count} materials in one click.`,
                           };
                         })
                       }
                     >
-                      <Check size={15} /> Approve Selected ({selectedIds.length}
-                      )
+                      <CheckCircle2 size={16} /> Approve All Pending (
+                      {bunchEligible.length})
                     </button>
                   )}
-                  <button
-                    className="button"
-                    disabled={busy || !bunchSafe}
-                    onClick={() =>
-                      action(async () => {
-                        const r = await request("approve-batch", {
-                          item_ids: bunchEligible.map((i) => i.id),
-                          confirmed_student_safe: bunchSafe,
-                        });
-                        setSelectedIds([]);
-                        return {
-                          message: `Approved and published ${r.approved_count} materials in one click.`,
-                        };
-                      })
-                    }
-                  >
-                    <CheckCircle2 size={16} /> Approve All Pending (
-                    {bunchEligible.length})
-                  </button>
                 </div>
               </div>
             </section>
@@ -536,21 +671,21 @@ export default function AutomationPanel({ batches, onPublished }) {
                 <section className="panel import-card" key={i.id}>
                   <div className="row between">
                     <label className="row gap">
-                      {i.status === "pending" &&
-                        i.kind !== "private" &&
-                        i.kind !== "test_link" && (
-                          <input
-                            type="checkbox"
-                            checked={selectedIds.includes(i.id)}
-                            onChange={(e) =>
-                              setSelectedIds(
-                                e.target.checked
-                                  ? [...selectedIds, i.id]
-                                  : selectedIds.filter((id) => id !== i.id),
-                              )
-                            }
-                          />
-                        )}
+                      {(i.status === "pending" ||
+                        i.status === "restricted") && (
+                        <input
+                          type="checkbox"
+                          aria-label={`Select ${i.title}`}
+                          checked={selectedIds.includes(i.id)}
+                          onChange={(e) =>
+                            setSelectedIds(
+                              e.target.checked
+                                ? [...selectedIds, i.id]
+                                : selectedIds.filter((id) => id !== i.id),
+                            )
+                          }
+                        />
+                      )}
                       <span className="badge blue">
                         {label[i.kind] || i.kind}
                       </span>

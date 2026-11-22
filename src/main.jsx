@@ -3520,6 +3520,35 @@ function ResourceDetail({
   const [body, setBody] = useState(""),
     [file, setFile] = useState(null),
     [saving, setSaving] = useState(false);
+
+  const isRecording = c.kind === "recording";
+  const fileName = String(c.file_name || "").toLowerCase();
+  const fileMime = String(c.file_mime || "").toLowerCase();
+  const isImageFile =
+    !isRecording &&
+    !!c.file_id &&
+    (c.kind === "image" ||
+      fileMime.startsWith("image/") ||
+      /\.(png|jpe?g|webp|svg|gif)$/i.test(fileName));
+  const isPdfFile =
+    !isRecording &&
+    !!c.file_id &&
+    (fileMime === "application/pdf" || /\.pdf$/i.test(fileName));
+  const isTextFile =
+    !isRecording &&
+    !!c.file_id &&
+    (fileMime.startsWith("text/") ||
+      /\.(txt|md|ya?ml|sh|py|json|csv)$/i.test(fileName));
+  const isPptFile =
+    !isRecording &&
+    !!c.file_id &&
+    (/\.(pptx|ppt)$/i.test(fileName) ||
+      fileMime.includes("presentation") ||
+      fileMime.includes("powerpoint"));
+  const isSlidesPdf = isPdfFile && c.kind === "slides";
+  const inlineHref = c.file_id ? "/api/files/" + c.file_id + "?inline=1" : "";
+  const downloadHref = c.file_id ? "/api/files/" + c.file_id : "";
+
   return (
     <>
       <div className="row gap">
@@ -3528,16 +3557,21 @@ function ResourceDetail({
           Topic {c.topic_order} · {c.topic}
         </span>
       </div>
-      {c.kind === "image" && c.file_id && (
-        <div className="diagram-preview">
+      {isImageFile && (
+        <div className="inline-preview-box">
           <img
-            src={"/api/files/" + c.file_id + "?inline=1"}
+            className="inline-preview-img"
+            src={inlineHref}
             alt={c.title}
-            style={{
-              maxWidth: "100%",
-              borderRadius: "12px",
-              marginTop: "12px",
-            }}
+          />
+        </div>
+      )}
+      {isPdfFile && (
+        <div className="inline-preview-box">
+          <iframe
+            className="inline-preview-frame"
+            title={c.title}
+            src={inlineHref}
           />
         </div>
       )}
@@ -3549,27 +3583,78 @@ function ResourceDetail({
           <a className="button" href={c.url} target="_blank" rel="noreferrer">
             {c.kind === "live"
               ? "Join live session"
-              : c.kind === "recording"
+              : isRecording
                 ? "Watch recording"
-                : "Open resource"}{" "}
+                : isPptFile || c.kind === "slides"
+                  ? "Open & Read Presentation Online"
+                  : "Open resource"}{" "}
             <ExternalLink size={16} />
           </a>
         )}
-        {c.file_id && (
-          <a
-            className="button secondary"
-            href={"/api/files/" + c.file_id + "?inline=1"}
-            target="_blank"
-            rel="noreferrer"
-          >
-            Read / open attachment ↗
+        {!isRecording && isImageFile && (
+          <>
+            <a
+              className="button secondary"
+              href={inlineHref}
+              target="_blank"
+              rel="noreferrer"
+            >
+              Open Full Image ↗
+            </a>
+            <a className="button secondary" href={downloadHref}>
+              <Download size={16} /> Download Image
+            </a>
+          </>
+        )}
+        {!isRecording && isPdfFile && (
+          <>
+            <a
+              className="button secondary"
+              href={inlineHref}
+              target="_blank"
+              rel="noreferrer"
+            >
+              {isSlidesPdf
+                ? "Open Slides in New Tab ↗"
+                : "Open PDF in New Tab ↗"}
+            </a>
+            <a className="button secondary" href={downloadHref}>
+              <Download size={16} />{" "}
+              {isSlidesPdf ? "Download Slides (PDF)" : "Download PDF"}
+            </a>
+          </>
+        )}
+        {!isRecording && !isImageFile && !isPdfFile && isTextFile && (
+          <>
+            <a
+              className="button secondary"
+              href={inlineHref}
+              target="_blank"
+              rel="noreferrer"
+            >
+              Read Inline / Open ↗
+            </a>
+            <a className="button secondary" href={downloadHref}>
+              <Download size={16} /> Download File
+            </a>
+          </>
+        )}
+        {!isRecording && !isImageFile && !isPdfFile && !isTextFile && isPptFile && (
+          <a className="button secondary" href={downloadHref}>
+            <Download size={16} /> Download Presentation (
+            {/\.ppt$/i.test(fileName) ? ".ppt" : ".pptx"})
           </a>
         )}
-        {c.file_id && (
-          <a className="button secondary" href={"/api/files/" + c.file_id}>
-            <Download size={16} /> Download attachment
-          </a>
-        )}
+        {!isRecording &&
+          c.file_id &&
+          !isImageFile &&
+          !isPdfFile &&
+          !isTextFile &&
+          !isPptFile && (
+            <a className="button secondary" href={downloadHref}>
+              <Download size={16} /> Download attachment
+            </a>
+          )}
         {["notes", "slides", "recording", "guide", "image"].includes(
           c.kind,
         ) && (

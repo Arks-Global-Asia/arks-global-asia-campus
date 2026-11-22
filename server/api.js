@@ -256,7 +256,7 @@ async function handle(req, env) {
     const b = await member(db, u, batch);
     const content = await rows(
       db,
-      "SELECT * FROM content WHERE course_id=? AND (batch_id IS NULL OR batch_id=?) AND published=1 ORDER BY topic_order,created",
+      "SELECT c.*, f.name AS file_name, f.mime AS file_mime FROM content c LEFT JOIN files f ON f.id = c.file_id WHERE c.course_id=? AND (c.batch_id IS NULL OR c.batch_id=?) AND c.published=1 ORDER BY c.topic_order, c.created",
       b.course_id,
       batch,
     );
@@ -759,22 +759,40 @@ async function handle(req, env) {
     const isInline = new URL(req.url).searchParams.has("inline");
     let contentType = "application/octet-stream";
     let inlineAllowed = false;
+    let csp =
+      "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox";
+    if (/\.pptx$/i.test(f.name)) {
+      contentType =
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+    } else if (/\.ppt$/i.test(f.name)) {
+      contentType = "application/vnd.ms-powerpoint";
+    }
     if (isInline) {
       if (/\.pdf$/i.test(f.name)) {
         contentType = "application/pdf";
         inlineAllowed = true;
+        csp = "default-src 'none'; frame-ancestors 'self'";
       } else if (/\.png$/i.test(f.name)) {
         contentType = "image/png";
         inlineAllowed = true;
+        csp = "default-src 'none'; img-src 'self' data:; frame-ancestors 'self'";
       } else if (/\.jpe?g$/i.test(f.name)) {
         contentType = "image/jpeg";
         inlineAllowed = true;
+        csp = "default-src 'none'; img-src 'self' data:; frame-ancestors 'self'";
       } else if (/\.webp$/i.test(f.name)) {
         contentType = "image/webp";
         inlineAllowed = true;
+        csp = "default-src 'none'; img-src 'self' data:; frame-ancestors 'self'";
+      } else if (/\.gif$/i.test(f.name)) {
+        contentType = "image/gif";
+        inlineAllowed = true;
+        csp = "default-src 'none'; img-src 'self' data:; frame-ancestors 'self'";
       } else if (/\.svg$/i.test(f.name)) {
         contentType = "image/svg+xml";
         inlineAllowed = true;
+        csp =
+          "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox";
       } else if (/\.(txt|md|ya?ml|sh|py|json|csv)$/i.test(f.name)) {
         contentType = "text/plain; charset=utf-8";
         inlineAllowed = true;
@@ -784,8 +802,7 @@ async function handle(req, env) {
       headers: {
         "Content-Type": contentType,
         "Content-Disposition": `${inlineAllowed ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(f.name)}`,
-        "Content-Security-Policy":
-          "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox",
+        "Content-Security-Policy": csp,
         "X-Content-Type-Options": "nosniff",
         "Cache-Control": "private, no-store",
       },

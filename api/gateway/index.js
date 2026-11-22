@@ -86360,7 +86360,7 @@ async function adminAutomation(req, env, u) {
       );
     let candidates = [];
     if (Array.isArray(d.item_ids) && d.item_ids.length) {
-      for (const itemId of d.item_ids.slice(0, 100)) {
+      for (const itemId of [...new Set(d.item_ids)].slice(0, 100)) {
         const row = await one2(
           db,
           "SELECT i.*,s.batch_id,s.generation current_generation,b.course_id FROM import_items i JOIN automation_sources s ON s.id=i.source_id JOIN batches b ON b.id=s.batch_id WHERE i.id=?",
@@ -86457,6 +86457,47 @@ async function adminAutomation(req, env, u) {
       approved_count: contentIds.length,
       content_ids: contentIds
     });
+  }
+  if (p.endsWith("/reject-batch")) {
+    if (!Array.isArray(d.item_ids) || !d.item_ids.length || d.item_ids.length > 100)
+      fail2(400, "Select between 1 and 100 items to reject.");
+    const uniqueIds = [
+      ...new Set(d.item_ids.filter((id2) => typeof id2 === "string" && id2.trim()))
+    ];
+    if (!uniqueIds.length)
+      fail2(400, "Select at least one valid item to reject.");
+    const eligible = [];
+    for (const itemId of uniqueIds) {
+      const row = await one2(
+        db,
+        "SELECT id,status FROM import_items WHERE id=? AND status IN ('pending','restricted')",
+        itemId
+      );
+      if (row) eligible.push(row);
+    }
+    const reviewNote = String(d.note || "Bulk rejected").slice(0, 2e3);
+    const timestamp = now2();
+    if (eligible.length) {
+      await db.batch([
+        ...eligible.map(
+          (row) => db.prepare(
+            "UPDATE import_items SET status='rejected',review_note=?,reviewed_by=?,reviewed_at=? WHERE id=? AND status IN ('pending','restricted')"
+          ).bind(reviewNote, u.id, timestamp, row.id)
+        ),
+        db.prepare(
+          "INSERT INTO audit (id,actor,action,entity,created) VALUES (?,?,?,?,?)"
+        ).bind(
+          uuid(),
+          u.id,
+          "reject_batch:import",
+          `${eligible.length} items`,
+          timestamp
+        )
+      ]);
+    } else {
+      await audit(db, u.id, "reject_batch:import", "0 items");
+    }
+    return response({ ok: true, rejected_count: eligible.length });
   }
   fail2(404, "Automation action not found.");
 }
@@ -87133,7 +87174,7 @@ async function handle(req, env) {
     const b = await member(db, u, batch);
     const content = await rows2(
       db,
-      "SELECT * FROM content WHERE course_id=? AND (batch_id IS NULL OR batch_id=?) AND published=1 ORDER BY topic_order,created",
+      "SELECT c.*, f.name AS file_name, f.mime AS file_mime FROM content c LEFT JOIN files f ON f.id = c.file_id WHERE c.course_id=? AND (c.batch_id IS NULL OR c.batch_id=?) AND c.published=1 ORDER BY c.topic_order, c.created",
       b.course_id,
       batch
     );
@@ -87606,22 +87647,37 @@ async function handle(req, env) {
     const isInline = new URL(req.url).searchParams.has("inline");
     let contentType2 = "application/octet-stream";
     let inlineAllowed = false;
+    let csp = "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox";
+    if (/\.pptx$/i.test(f.name)) {
+      contentType2 = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+    } else if (/\.ppt$/i.test(f.name)) {
+      contentType2 = "application/vnd.ms-powerpoint";
+    }
     if (isInline) {
       if (/\.pdf$/i.test(f.name)) {
         contentType2 = "application/pdf";
         inlineAllowed = true;
+        csp = "default-src 'none'; frame-ancestors 'self'";
       } else if (/\.png$/i.test(f.name)) {
         contentType2 = "image/png";
         inlineAllowed = true;
+        csp = "default-src 'none'; img-src 'self' data:; frame-ancestors 'self'";
       } else if (/\.jpe?g$/i.test(f.name)) {
         contentType2 = "image/jpeg";
         inlineAllowed = true;
+        csp = "default-src 'none'; img-src 'self' data:; frame-ancestors 'self'";
       } else if (/\.webp$/i.test(f.name)) {
         contentType2 = "image/webp";
         inlineAllowed = true;
+        csp = "default-src 'none'; img-src 'self' data:; frame-ancestors 'self'";
+      } else if (/\.gif$/i.test(f.name)) {
+        contentType2 = "image/gif";
+        inlineAllowed = true;
+        csp = "default-src 'none'; img-src 'self' data:; frame-ancestors 'self'";
       } else if (/\.svg$/i.test(f.name)) {
         contentType2 = "image/svg+xml";
         inlineAllowed = true;
+        csp = "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox";
       } else if (/\.(txt|md|ya?ml|sh|py|json|csv)$/i.test(f.name)) {
         contentType2 = "text/plain; charset=utf-8";
         inlineAllowed = true;
@@ -87631,7 +87687,7 @@ async function handle(req, env) {
       headers: {
         "Content-Type": contentType2,
         "Content-Disposition": `${inlineAllowed ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(f.name)}`,
-        "Content-Security-Policy": "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox",
+        "Content-Security-Policy": csp,
         "X-Content-Type-Options": "nosniff",
         "Cache-Control": "private, no-store"
       }

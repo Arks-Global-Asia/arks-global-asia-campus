@@ -1254,3 +1254,153 @@ test("POST /api/admin/group-members adds already-created users to a Batch Group,
     404,
   );
 });
+
+test("POST /api/admin/group-members creates new_students as student role and enrolls them atomically", async () => {
+  const { env, call } = await campus();
+
+  const grp = await call(owner, "admin/group", {
+    batch_id: "sandbox",
+    name: "New Student Intake Group",
+    members: "",
+  });
+  assert.equal(grp.status, 200);
+  assert.equal(grp.data.ok, true);
+  const groupId = grp.data.id;
+
+  const res = await call(owner, "admin/group-members", {
+    group_id: groupId,
+    action: "add",
+    fee: 300000,
+    new_students: [
+      {
+        name: "Priya Nair",
+        email: "PRIYA.NAIR@arks.test",
+        phone: "+91 90000 11111",
+        role: "admin", // Must be ignored — always created as student
+      },
+      {
+        email: "dev.learner@arks.test",
+      },
+    ],
+  });
+  assert.equal(res.status, 200);
+  assert.equal(res.data.ok, true);
+  assert.equal(res.data.count, 2);
+
+  const priya = await env.DB.prepare(
+    "SELECT * FROM users WHERE lower(email)='priya.nair@arks.test'",
+  ).first();
+  assert.ok(priya, "Expected Priya user to be auto-created");
+  assert.equal(priya.role, "student");
+  assert.equal(priya.name, "Priya Nair");
+  assert.equal(priya.phone, "+91 90000 11111");
+  assert.equal(priya.active, 1);
+  assert.equal(priya.onboarded, 0);
+
+  const devUser = await env.DB.prepare(
+    "SELECT * FROM users WHERE lower(email)='dev.learner@arks.test'",
+  ).first();
+  assert.ok(devUser, "Expected dev.learner user to be auto-created");
+  assert.equal(devUser.role, "student");
+  assert.equal(devUser.name, "dev.learner");
+
+  const gmRows = (
+    await env.DB.prepare(
+      "SELECT email FROM group_members WHERE group_id=? ORDER BY email",
+    )
+      .bind(groupId)
+      .all()
+  ).results;
+  assert.deepEqual(
+    gmRows.map((r) => r.email),
+    ["dev.learner@arks.test", "priya.nair@arks.test"],
+  );
+
+  const enr = await env.DB.prepare(
+    "SELECT * FROM enrollments WHERE user_id=? AND batch_id='sandbox'",
+  )
+    .bind(priya.id)
+    .first();
+  assert.ok(enr, "Expected Priya to be auto-enrolled");
+  assert.equal(enr.fee, 300000);
+
+  const inv = await env.DB.prepare(
+    "SELECT * FROM invitations WHERE email='priya.nair@arks.test' AND batch_id='sandbox'",
+  ).first();
+  assert.ok(inv, "Expected invitation row for Priya");
+});
+
+test("POST /api/admin/group creates a new group with existing user_ids, new_students, and members in one atomic call", async () => {
+  const { env, call } = await campus();
+
+  const existing = await call(owner, "admin/users", {
+    name: "Existing Student",
+    email: "existing.stu@arks.test",
+    role: "student",
+  });
+  assert.equal(existing.status, 200);
+
+  const grp = await call(owner, "admin/group", {
+    batch_id: "sandbox",
+    name: "All-in-One Cohort",
+    fee: 450000,
+    user_ids: [existing.data.id],
+    new_students: [
+      {
+        name: "Kabir Verma",
+        email: "kabir.verma@arks.test",
+        phone: "+91 98888 77777",
+        role: "trainer", // Must be ignored
+      },
+    ],
+    members: "invited.only@arks.test",
+  });
+  assert.equal(grp.status, 200);
+  assert.equal(grp.data.ok, true);
+  assert.equal(grp.data.count, 3);
+  assert.ok(grp.data.id);
+
+  const gmRows = (
+    await env.DB.prepare(
+      "SELECT email FROM group_members WHERE group_id=? ORDER BY email",
+    )
+      .bind(grp.data.id)
+      .all()
+  ).results;
+  assert.deepEqual(
+    gmRows.map((r) => r.email),
+    [
+      "existing.stu@arks.test",
+      "invited.only@arks.test",
+      "kabir.verma@arks.test",
+    ],
+  );
+
+  const kabir = await env.DB.prepare(
+    "SELECT * FROM users WHERE lower(email)='kabir.verma@arks.test'",
+  ).first();
+  assert.ok(kabir, "Expected Kabir to be auto-created");
+  assert.equal(kabir.role, "student");
+  assert.equal(kabir.name, "Kabir Verma");
+
+  const enrExisting = await env.DB.prepare(
+    "SELECT * FROM enrollments WHERE user_id=? AND batch_id='sandbox'",
+  )
+    .bind(existing.data.id)
+    .first();
+  assert.ok(enrExisting, "Expected existing student to be enrolled");
+  assert.equal(enrExisting.fee, 450000);
+
+  const enrKabir = await env.DB.prepare(
+    "SELECT * FROM enrollments WHERE user_id=? AND batch_id='sandbox'",
+  )
+    .bind(kabir.id)
+    .first();
+  assert.ok(enrKabir, "Expected Kabir to be enrolled");
+  assert.equal(enrKabir.fee, 450000);
+
+  const invInvited = await env.DB.prepare(
+    "SELECT * FROM invitations WHERE email='invited.only@arks.test' AND batch_id='sandbox'",
+  ).first();
+  assert.ok(invInvited, "Expected invitation row for invited.only@arks.test");
+});

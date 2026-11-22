@@ -658,6 +658,42 @@ export async function featureRoutes(req, env, u) {
         emailSet.add(cleaned);
       }
     }
+    if (action === "add" && Array.isArray(d.new_students)) {
+      if (d.new_students.length > 500)
+        fail(400, "Up to 500 new students can be added at once.");
+      for (const entry of d.new_students) {
+        const cleaned = String(entry?.email || "")
+          .trim()
+          .toLowerCase();
+        if (!cleaned) continue;
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleaned))
+          fail(400, `Invalid email address: ${cleaned}`);
+        const existing = await one(
+          db,
+          "SELECT id FROM users WHERE lower(email)=?",
+          cleaned,
+        );
+        if (!existing) {
+          const name =
+            String(entry?.name || "")
+              .trim()
+              .slice(0, 120) || cleaned.split("@")[0];
+          const phone = String(entry?.phone || "")
+            .trim()
+            .slice(0, 30);
+          await run(
+            db,
+            "INSERT INTO users (id,email,name,role,phone,goal,active,onboarded,created) VALUES (?,?,?,'student',?,'',1,0,?)",
+            uid(),
+            cleaned,
+            name,
+            phone,
+            now(),
+          );
+        }
+        emailSet.add(cleaned);
+      }
+    }
     const resolvedEmails = [...emailSet];
     if (!resolvedEmails.length || resolvedEmails.length > 2000)
       fail(400, "Select at least one valid user or email address.");
@@ -774,19 +810,76 @@ export async function featureRoutes(req, env, u) {
     await member(db, u, d.batch_id);
     if (!d.name?.trim()) fail(400, "Group name is required.");
     const group = d.id || uid();
-    const emails = [
-      ...new Set(
-        String(d.members || "")
-          .split(/[\s,;]+/)
-          .map((e) => e.toLowerCase())
-          .filter(Boolean),
-      ),
-    ];
+    const emailSet = new Set(
+      String(d.members || "")
+        .split(/[\s,;]+/)
+        .map((e) => e.trim().toLowerCase())
+        .filter(Boolean),
+    );
+    if (Array.isArray(d.user_ids)) {
+      for (const targetUid of d.user_ids) {
+        if (typeof targetUid !== "string" || !targetUid.trim()) continue;
+        const person = await one(
+          db,
+          "SELECT email FROM users WHERE id=?",
+          targetUid.trim(),
+        );
+        if (person?.email) emailSet.add(String(person.email).trim().toLowerCase());
+      }
+    }
+    if (Array.isArray(d.new_students)) {
+      if (d.new_students.length > 500)
+        fail(400, "Up to 500 new students can be added at once.");
+      for (const entry of d.new_students) {
+        const cleaned = String(entry?.email || "")
+          .trim()
+          .toLowerCase();
+        if (!cleaned) continue;
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleaned))
+          fail(400, `Invalid email address: ${cleaned}`);
+        const existing = await one(
+          db,
+          "SELECT id FROM users WHERE lower(email)=?",
+          cleaned,
+        );
+        if (!existing) {
+          const name =
+            String(entry?.name || "")
+              .trim()
+              .slice(0, 120) || cleaned.split("@")[0];
+          const phone = String(entry?.phone || "")
+            .trim()
+            .slice(0, 30);
+          await run(
+            db,
+            "INSERT INTO users (id,email,name,role,phone,goal,active,onboarded,created) VALUES (?,?,?,'student',?,'',1,0,?)",
+            uid(),
+            cleaned,
+            name,
+            phone,
+            now(),
+          );
+        }
+        emailSet.add(cleaned);
+      }
+    }
+    const emails = [...emailSet];
     if (
       emails.length > 2000 ||
       emails.some((e) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e))
     )
       fail(400, "Enter valid member email addresses.");
+    let fee = 0;
+    if (d.fee !== undefined && d.fee !== null && d.fee !== "") {
+      fee = Math.max(0, Math.floor(Number(d.fee) || 0));
+    } else {
+      const courseRow = await one(
+        db,
+        "SELECT c.fee FROM courses c JOIN batches b ON b.course_id=c.id WHERE b.id=?",
+        d.batch_id,
+      );
+      fee = Math.max(0, Number(courseRow?.fee) || 0);
+    }
     const old = await one(db, "SELECT * FROM access_groups WHERE id=?", group);
     if (old && old.batch_id !== d.batch_id)
       fail(400, "Create a new group to change its batch.");
@@ -832,6 +925,32 @@ export async function featureRoutes(req, env, u) {
         JSON.stringify(cfg),
         d.batch_id,
       );
+      for (const email of emails) {
+        const person = await one(
+          db,
+          "SELECT id FROM users WHERE lower(email)=?",
+          email,
+        );
+        if (person) {
+          await run(
+            db,
+            "INSERT OR IGNORE INTO enrollments(id,user_id,batch_id,fee,created) VALUES (?,?,?,?,?)",
+            uid(),
+            person.id,
+            d.batch_id,
+            fee,
+            now(),
+          );
+        }
+        await run(
+          db,
+          "INSERT OR IGNORE INTO invitations (id,email,batch_id,role,fee) VALUES (?,?,?,'student',?)",
+          uid(),
+          email,
+          d.batch_id,
+          fee,
+        );
+      }
       await queueJob(db, "google_group_update", d.batch_id, group, {
         google_group: remote,
         add: emails.filter((e) => !previous.some((p) => p.email === e)),
@@ -840,6 +959,7 @@ export async function featureRoutes(req, env, u) {
       const dispatched = await wakeEngine(env);
       return json({
         id: group,
+        ok: true,
         message: dispatched
           ? "Google Group update queued; access changes after verified sync."
           : "Group update queued. Configure the Azure engine and Workspace delegation to apply it.",
@@ -862,7 +982,11 @@ export async function featureRoutes(req, env, u) {
       ),
     ]);
     for (const email of emails) {
-      const person = await one(db, "SELECT id FROM users WHERE email=?", email);
+      const person = await one(
+        db,
+        "SELECT id FROM users WHERE lower(email)=?",
+        email,
+      );
       if (person)
         await run(
           db,
@@ -870,11 +994,19 @@ export async function featureRoutes(req, env, u) {
           uid(),
           person.id,
           d.batch_id,
-          Number(d.fee) || 0,
+          fee,
           now(),
         );
+      await run(
+        db,
+        "INSERT OR IGNORE INTO invitations (id,email,batch_id,role,fee) VALUES (?,?,?,'student',?)",
+        uid(),
+        email,
+        d.batch_id,
+        fee,
+      );
     }
-    return json({ id: group });
+    return json({ id: group, ok: true, count: emails.length });
   }
   if (p === "/api/admin/sessions" && req.method === "POST") {
     staff(u);

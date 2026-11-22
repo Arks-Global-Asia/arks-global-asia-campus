@@ -553,13 +553,39 @@ test("Students & Team cleanly separates Students, Trainers & Admins, and Batch G
       "Expected Create Trainer / Admin button",
     );
 
-    // Switch to Batch Groups tab -> shows Step 1, Step 2 (existing students), Step 3
+    // Switch to Batch Groups tab -> shows Manage Existing Group & Create New Group modes
     await settle(() => button("Batch Groups").click());
-    assert.match(document.body.textContent, /Step 1 — Select Batch & Batch Group/);
+    assert.ok(
+      button("Manage Existing Group"),
+      "Expected Manage Existing Group mode button",
+    );
+    assert.ok(
+      button("Create New Group & Add / Invite Students"),
+      "Expected Create New Group & Add / Invite Students mode button",
+    );
+    // Default mode is Manage Existing Group since Evening Cohort Group exists
+    assert.match(document.body.textContent, /Select Existing Group/);
     assert.match(document.body.textContent, /Evening Cohort Group/);
-    assert.match(document.body.textContent, /Step 2 — Add Existing Students/);
+    assert.match(document.body.textContent, /Add Already-Created Students/);
     assert.match(document.body.textContent, /Rohan Learner/);
-    assert.match(document.body.textContent, /Step 3 — Current Group Members/);
+    assert.match(
+      document.body.textContent,
+      /Create & Add \/ Invite New Student\(s\)/,
+    );
+    assert.match(document.body.textContent, /Current Group Members/);
+
+    // Switch to Create New Group & Add / Invite Students mode
+    await settle(() =>
+      button("Create New Group & Add / Invite Students").click(),
+    );
+    assert.match(
+      document.body.textContent,
+      /Create New Group & Add \/ Invite Students/,
+    );
+    assert.match(document.body.textContent, /New Group Name/);
+    assert.match(document.body.textContent, /Add Already-Created Students/);
+    assert.match(document.body.textContent, /Invite \/ Create New Students/);
+    assert.match(document.body.textContent, /Rohan Learner/);
   } finally {
     globalThis.fetch = originalFetch;
     dom.window.close();

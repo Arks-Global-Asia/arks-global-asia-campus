@@ -850,6 +850,8 @@ async function adminApi(req, db, u, p) {
       "attempts",
       "completions",
       "automation_sources",
+      "access_groups",
+      "group_members",
     ];
     const data = {};
     for (const n of names) {

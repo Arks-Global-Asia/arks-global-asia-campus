@@ -412,6 +412,9 @@ export function AdminTools({ tab, data, batchId, user, refresh, edit }) {
     setFeatures(await request("admin/features"));
   }
   useEffect(() => {
+    if (batchId) setLocalBatch(batchId);
+  }, [batchId]);
+  useEffect(() => {
     load().catch((e) => setNotice(e.message));
   }, []);
   async function save(path, body) {
@@ -439,7 +442,7 @@ export function AdminTools({ tab, data, batchId, user, refresh, edit }) {
               settings: "Batch experience & roadmap",
               schedule: "Live session planner & recordings",
               engine: "AI Assessment Studio & 9:00 AM IST Scheduler",
-              access: "Student Onboarding, Groups & Staff Access",
+              access: "Batch Groups & Member Assignment",
             }[tab]
           }
         </h2>
@@ -1360,190 +1363,353 @@ function Studio({ batch, data, save, features, pending, edit }) {
   );
 }
 
-function Access({ batch, data, user, features, save, pending }) {
-  const [group, setGroup] = useState(""),
-    [csvText, setCsvText] = useState(""),
-    [defaultFee, setDefaultFee] = useState(0);
-  const g = features.groups.find((g) => g.id === group);
-  const isHeadAdmin = !user || user.role === "admin";
+function Access({ batch, data, features, save, pending }) {
+  const batchGroups = (features.groups || []).filter(
+    (g) => g.batch_id === batch.id,
+  );
+  const [groupId, setGroupId] = useState(() => batchGroups[0]?.id || "");
+  const [showNewGroup, setShowNewGroup] = useState(false);
+  const [newGroupName, setNewGroupName] = useState("");
+  const [newGoogleGroup, setNewGoogleGroup] = useState("");
+  const [studentSearch, setStudentSearch] = useState("");
+  const [selectedUserIds, setSelectedUserIds] = useState([]);
+  const [agreedFee, setAgreedFee] = useState("");
+  const [csvText, setCsvText] = useState("");
+  const [defaultFee, setDefaultFee] = useState(0);
+
+  useEffect(() => {
+    if (!groupId && batchGroups.length) {
+      setGroupId(batchGroups[0].id);
+    } else if (groupId && !batchGroups.some((g) => g.id === groupId)) {
+      setGroupId(batchGroups[0]?.id || "");
+    }
+  }, [batch.id, batchGroups.length, groupId]);
+
+  const selectedGroup = batchGroups.find((g) => g.id === groupId) || null;
+  const currentMembers = selectedGroup
+    ? (features.members || []).filter((m) => m.group_id === selectedGroup.id)
+    : [];
+  const memberEmailSet = new Set(
+    currentMembers.map((m) => String(m.email || "").toLowerCase()),
+  );
+  const allStudents = (data.users || []).filter((u) => u.role === "student");
+  const q = studentSearch.trim().toLowerCase();
+  const filteredStudents = allStudents.filter(
+    (s) =>
+      !q ||
+      String(s.name || "")
+        .toLowerCase()
+        .includes(q) ||
+      String(s.email || "")
+        .toLowerCase()
+        .includes(q),
+  );
+  const availableStudents = filteredStudents.filter(
+    (s) => !memberEmailSet.has(String(s.email || "").toLowerCase()),
+  );
+
   return (
     <>
-      <section className="panel">
-        <h3>Authentication & Domain Readiness</h3>
-        <p>
-          Google sign-in:{" "}
-          {features.google_ready ? "configured" : "awaiting OAuth credentials"}{" "}
-          · Mode: {features.auth_mode}
-        </p>
-        <p>
-          Custom Domain (<code>student-portal.arksglobalasia.cloud</code>) &
-          Azure Static Web Apps (
-          <code>yellow-tree-0ceb4a400.3.azurestaticapps.net</code>) are
-          authorized for both Google OAuth and Staff Password Sign-in.
-        </p>
+      <section className="panel form">
+        <div className="row between wrap gap">
+          <div>
+            <h3>Step 1 — Select Batch &amp; Batch Group ({batch.name})</h3>
+            <p className="help-note">
+              Choose a Batch Group to manage its student roster, or create a new
+              group for this batch.
+            </p>
+          </div>
+          <button
+            type="button"
+            className="button secondary"
+            onClick={() => setShowNewGroup((v) => !v)}
+          >
+            {showNewGroup ? "Close New Group" : "+ New Batch Group"}
+          </button>
+        </div>
+
+        {batchGroups.length > 0 && (
+          <Select
+            label="Selected Batch Group"
+            value={groupId}
+            onChange={(nextId) => {
+              setGroupId(nextId);
+              setSelectedUserIds([]);
+            }}
+            options={batchGroups.map((g) => [
+              g.id,
+              g.google_group ? `${g.name} (${g.google_group})` : g.name,
+            ])}
+          />
+        )}
+
+        {(showNewGroup || batchGroups.length === 0) && (
+          <form
+            className="builder"
+            onSubmit={async (e) => {
+              e.preventDefault();
+              const res = await save("admin/group", {
+                batch_id: batch.id,
+                name: newGroupName.trim(),
+                google_group: newGoogleGroup.trim(),
+                members: "",
+              });
+              if (res?.id) {
+                setGroupId(res.id);
+                setNewGroupName("");
+                setNewGoogleGroup("");
+                setShowNewGroup(false);
+              }
+            }}
+          >
+            <h4>Create a New Batch Group</h4>
+            <div className="two-col">
+              <Field
+                label="Group name"
+                value={newGroupName}
+                onChange={(e) => setNewGroupName(e.target.value)}
+                placeholder={`e.g., ${batch.name} — Cohort A`}
+                required
+              />
+              <Field
+                label="Google Group email (optional)"
+                type="email"
+                value={newGoogleGroup}
+                onChange={(e) => setNewGoogleGroup(e.target.value)}
+                placeholder="batch-group@arksglobalasia.cloud"
+              />
+            </div>
+            <button className="button" disabled={pending}>
+              Create Batch Group
+            </button>
+          </form>
+        )}
       </section>
-      <form
-        className="panel form"
-        onSubmit={async (e) => {
-          e.preventDefault();
-          const res = await save("admin/bulk-invite", {
-            batch_id: batch.id,
-            fee: Math.round(Number(defaultFee || 0) * 100),
-            csv: csvText,
-          });
-          if (res) setCsvText("");
-        }}
-      >
-        <h3>Bulk CSV / Multi-Line Student Onboarding ({batch.name})</h3>
-        <p>
-          Paste one student per line as <code>email,name,fee_in_paise</code> or
-          simply one email address per line. Already-registered students are
-          enrolled immediately.
-        </p>
-        <Field
-          label="Default agreed fee (major currency units, e.g. INR)"
-          type="number"
-          min="0"
-          value={defaultFee}
-          onChange={(e) => setDefaultFee(e.target.value)}
-        />
-        <Field label="Student emails or CSV rows">
-          <textarea
-            rows={5}
-            required
-            value={csvText}
-            onChange={(e) => setCsvText(e.target.value)}
-            placeholder={"student1@example.com,Aarav Sharma\nstudent2@example.com,Diya Patel"}
-          />
-        </Field>
-        <button className="button" disabled={pending}>
-          Bulk invite & enroll students
-        </button>
-      </form>
-      <form
-        key={group}
-        className="panel form"
-        onSubmit={(e) => {
-          e.preventDefault();
-          save("admin/group", {
-            ...Object.fromEntries(new FormData(e.target)),
-            id: group || undefined,
-            batch_id: batch.id,
-          });
-        }}
-      >
-        <h3>Batch access groups</h3>
-        <Select
-          label="Group"
-          value={group}
-          onChange={setGroup}
-          options={[
-            ["", "Create group"],
-            ...features.groups
-              .filter((g) => g.batch_id === batch.id)
-              .map((g) => [g.id, g.name]),
-          ]}
-        />
-        <Field
-          label="Group name"
-          name="name"
-          defaultValue={g?.name || ""}
-          required
-        />
-        <Field
-          label="Google Group email (optional)"
-          name="google_group"
-          defaultValue={g?.google_group || ""}
-        />
-        <Field label="Member emails">
-          <textarea
-            name="members"
-            rows={5}
-            defaultValue={features.members
-              .filter((m) => m.group_id === group)
-              .map((m) => m.email)
-              .join("\n")}
-          />
-        </Field>
-        <Field
-          label="Enrollment fee in smallest currency unit (paise for INR)"
-          name="fee"
-          type="number"
-          min="0"
-          defaultValue="0"
-        />
-        <button className="button" disabled={pending}>
-          Save group & enroll members
-        </button>
-      </form>
-      {isHeadAdmin && (
+
+      {selectedGroup && (
         <>
           <form
             className="panel form"
             onSubmit={async (e) => {
               e.preventDefault();
-              const form = e.currentTarget;
-              const r = await save(
-                "admin/password",
-                Object.fromEntries(new FormData(form)),
-              );
-              if (r) form.reset();
+              if (!selectedUserIds.length) return;
+              const payload = {
+                group_id: selectedGroup.id,
+                action: "add",
+                user_ids: selectedUserIds,
+              };
+              if (agreedFee !== "") {
+                payload.fee = Math.round(Number(agreedFee) * 100);
+              }
+              const res = await save("admin/group-members", payload);
+              if (res?.ok) {
+                setSelectedUserIds([]);
+                setAgreedFee("");
+              }
             }}
           >
-            <h3>Create or reset staff login (Head / Admin or Trainer)</h3>
-            <p>
-              Passwords are salted and hashed with PBKDF2-SHA256. Both Head
-              Administrators and Trainers can sign in with email & password or
-              Google OAuth.
+            <h3>
+              Step 2 — Add Existing Students to “{selectedGroup.name}”
+            </h3>
+            <p className="help-note">
+              Adding students to this group automatically enrolls them in{" "}
+              <b>{batch.name}</b> and grants Google OAuth access.
             </p>
-            <div className="two-col">
-              <Field label="Staff name" name="name" required />
-              <Field label="Staff email" name="email" type="email" required />
-              <Field label="Role">
-                <select name="role" defaultValue="admin">
-                  <option value="admin">Head / Administrator (Full Access)</option>
-                  <option value="trainer">
-                    Trainer / Instructor (Teaching & Content Access)
-                  </option>
-                </select>
-              </Field>
-              <Field
-                label="New password (at least 14 characters)"
-                name="password"
-                type="password"
-                minLength="14"
-                autoComplete="new-password"
-                required
+            <div className="row between wrap gap">
+              <input
+                type="search"
+                aria-label="Search students to add"
+                placeholder="Search students by name or email…"
+                value={studentSearch}
+                onChange={(e) => setStudentSearch(e.target.value)}
+                style={{ flex: "1 1 240px" }}
               />
-            </div>
-            <button className="button" disabled={pending}>
-              Save staff credentials
-            </button>
-          </form>
-          <section className="panel">
-            <h3>Account access</h3>
-            {data.users.map((u) => (
-              <div className="session-row" key={u.id}>
-                <div className="grow">
-                  <b>{u.name}</b>
-                  <p>
-                    {u.email} · {u.role}
-                  </p>
-                </div>
+              <div className="row gap">
                 <button
-                  className="button secondary"
-                  disabled={pending}
+                  type="button"
+                  className="text-btn"
+                  disabled={!availableStudents.length}
                   onClick={() =>
-                    save("admin/access", { user_id: u.id, active: !u.active })
+                    setSelectedUserIds(availableStudents.map((s) => s.id))
                   }
                 >
-                  {u.active ? "Disable access" : "Enable access"}
+                  Select all available ({availableStudents.length})
+                </button>
+                <button
+                  type="button"
+                  className="text-btn"
+                  disabled={!selectedUserIds.length}
+                  onClick={() => setSelectedUserIds([])}
+                >
+                  Clear
                 </button>
               </div>
-            ))}
+            </div>
+
+            {allStudents.length === 0 ? (
+              <p className="help-note">
+                No student accounts exist yet. Create students in the{" "}
+                <b>Students</b> tab first.
+              </p>
+            ) : filteredStudents.length === 0 ? (
+              <p className="help-note">
+                No students match “{studentSearch}”.
+              </p>
+            ) : (
+              <div className="material-picker">
+                {filteredStudents.map((s) => {
+                  const inGroup = memberEmailSet.has(
+                    String(s.email || "").toLowerCase(),
+                  );
+                  const checked = inGroup || selectedUserIds.includes(s.id);
+                  return (
+                    <label className="row between gap" key={s.id}>
+                      <span className="row gap">
+                        <input
+                          type="checkbox"
+                          disabled={inGroup}
+                          checked={checked}
+                          onChange={(e) =>
+                            setSelectedUserIds((prev) =>
+                              e.target.checked
+                                ? [...prev, s.id]
+                                : prev.filter((id) => id !== s.id),
+                            )
+                          }
+                        />
+                        <span>
+                          <b>{s.name}</b> · <small>{s.email}</small>
+                        </span>
+                      </span>
+                      {inGroup && <span className="badge green">In group</span>}
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+
+            <Field
+              label="Agreed fee in INR (optional — leave blank for course default)"
+              type="number"
+              min="0"
+              value={agreedFee}
+              onChange={(e) => setAgreedFee(e.target.value)}
+            />
+            <button
+              className="button"
+              disabled={pending || !selectedUserIds.length}
+            >
+              Add Selected Users to Group ({selectedUserIds.length})
+            </button>
+          </form>
+
+          <section className="panel">
+            <h3>
+              Step 3 — Current Group Members ({currentMembers.length})
+            </h3>
+            {currentMembers.length === 0 ? (
+              <p className="help-note">
+                No members assigned to “{selectedGroup.name}” yet.
+              </p>
+            ) : (
+              currentMembers.map((m) => {
+                const person = (data.users || []).find(
+                  (u) =>
+                    String(u.email || "").toLowerCase() ===
+                    String(m.email || "").toLowerCase(),
+                );
+                return (
+                  <div className="session-row" key={m.email}>
+                    <div className="grow">
+                      <b>{person?.name || m.email}</b>
+                      <p>{m.email}</p>
+                    </div>
+                    <button
+                      type="button"
+                      className="button secondary"
+                      disabled={pending}
+                      onClick={() =>
+                        save("admin/group-members", {
+                          group_id: selectedGroup.id,
+                          action: "remove",
+                          emails: [m.email],
+                        })
+                      }
+                    >
+                      Remove
+                    </button>
+                  </div>
+                );
+              })
+            )}
           </section>
         </>
       )}
+
+      <details className="panel">
+        <summary style={{ cursor: "pointer", fontWeight: 600 }}>
+          Bulk CSV / Multi-Line Student Onboarding ({batch.name})
+        </summary>
+        <form
+          className="form"
+          style={{ marginTop: "12px" }}
+          onSubmit={async (e) => {
+            e.preventDefault();
+            const res = await save("admin/bulk-invite", {
+              batch_id: batch.id,
+              fee: Math.round(Number(defaultFee || 0) * 100),
+              csv: csvText,
+            });
+            if (res) setCsvText("");
+          }}
+        >
+          <p>
+            Paste one student per line as <code>email,name,fee_in_paise</code>{" "}
+            or simply one email address per line. Already-registered students
+            are enrolled immediately.
+          </p>
+          <Field
+            label="Default agreed fee (major currency units, e.g. INR)"
+            type="number"
+            min="0"
+            value={defaultFee}
+            onChange={(e) => setDefaultFee(e.target.value)}
+          />
+          <Field label="Student emails or CSV rows">
+            <textarea
+              rows={5}
+              required
+              value={csvText}
+              onChange={(e) => setCsvText(e.target.value)}
+              placeholder={
+                "student1@example.com,Aarav Sharma\nstudent2@example.com,Diya Patel"
+              }
+            />
+          </Field>
+          <button className="button" disabled={pending}>
+            Bulk invite &amp; enroll students
+          </button>
+        </form>
+      </details>
+
+      <details className="panel">
+        <summary style={{ cursor: "pointer", fontWeight: 600 }}>
+          Authentication &amp; Domain Readiness
+        </summary>
+        <div style={{ marginTop: "10px" }}>
+          <p>
+            Google sign-in:{" "}
+            {features.google_ready ? "configured" : "awaiting OAuth credentials"}{" "}
+            · Mode: {features.auth_mode}
+          </p>
+          <p>
+            Custom Domain (<code>student-portal.arksglobalasia.cloud</code>) &amp;
+            Azure Static Web Apps (
+            <code>yellow-tree-0ceb4a400.3.azurestaticapps.net</code>) are
+            authorized for both Google OAuth and Staff Password Sign-in.
+          </p>
+        </div>
+      </details>
     </>
   );
 }

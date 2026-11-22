@@ -565,6 +565,193 @@ export async function featureRoutes(req, env, u) {
     }
     return json({ ok: true });
   }
+  if (p === "/api/admin/users" && req.method === "POST") {
+    staff(u);
+    const d = await req.json();
+    const email = String(d.email || "")
+      .trim()
+      .toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
+      fail(400, "Enter a valid email address.");
+    const name = String(d.name || "").trim();
+    if (!name || name.length > 100)
+      fail(400, "Full name is required (maximum 100 characters).");
+    const phone = String(d.phone || "")
+      .trim()
+      .slice(0, 30);
+    const role = d.role === undefined || d.role === "" ? "student" : String(d.role);
+    if (!["student", "trainer", "admin"].includes(role))
+      fail(400, "Role must be student, trainer, or admin.");
+    if (role !== "student") admin(u);
+    const password =
+      d.password !== undefined && d.password !== null
+        ? String(d.password)
+        : "";
+    if (role !== "student" && password) {
+      if (password.length < 14 || password.length > 256)
+        fail(400, "Use a password of 14–256 characters.");
+    }
+    const existing = await one(
+      db,
+      "SELECT id FROM users WHERE lower(email)=?",
+      email,
+    );
+    if (existing) fail(409, "A user with this email already exists.");
+    const userId = uid();
+    await run(
+      db,
+      "INSERT INTO users (id,email,name,role,phone,goal,active,onboarded,created) VALUES (?,?,?,?,?,?,1,0,?)",
+      userId,
+      email,
+      name,
+      role,
+      phone,
+      "",
+      now(),
+    );
+    if (role !== "student" && password) {
+      await setAdminPassword(db, u, { email, name, role, password });
+    }
+    await run(
+      db,
+      "INSERT INTO audit (id,actor,action,entity,created) VALUES (?,?,?,?,?)",
+      uid(),
+      u.id,
+      "create:user",
+      userId,
+      now(),
+    );
+    return json({ ok: true, id: userId, role });
+  }
+  if (p === "/api/admin/group-members" && req.method === "POST") {
+    staff(u);
+    const d = await req.json();
+    const action = d.action === "add" || d.action === "remove" ? d.action : null;
+    if (!action) fail(400, "Action must be add or remove.");
+    const g = await one(
+      db,
+      "SELECT * FROM access_groups WHERE id=?",
+      String(d.group_id || ""),
+    );
+    if (!g) fail(404, "Batch group not found.");
+    await member(db, u, g.batch_id);
+    const emailSet = new Set();
+    if (Array.isArray(d.user_ids)) {
+      for (const targetUid of d.user_ids) {
+        if (typeof targetUid !== "string" || !targetUid.trim()) continue;
+        const person = await one(
+          db,
+          "SELECT email FROM users WHERE id=?",
+          targetUid.trim(),
+        );
+        if (person?.email) emailSet.add(String(person.email).trim().toLowerCase());
+      }
+    }
+    if (Array.isArray(d.emails)) {
+      for (const rawEmail of d.emails) {
+        const cleaned = String(rawEmail || "")
+          .trim()
+          .toLowerCase();
+        if (!cleaned) continue;
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleaned))
+          fail(400, `Invalid email address: ${cleaned}`);
+        emailSet.add(cleaned);
+      }
+    }
+    const resolvedEmails = [...emailSet];
+    if (!resolvedEmails.length || resolvedEmails.length > 2000)
+      fail(400, "Select at least one valid user or email address.");
+    if (resolvedEmails.some((e) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)))
+      fail(400, "Enter valid member email addresses.");
+    if (action === "add") {
+      let fee = 0;
+      if (d.fee !== undefined && d.fee !== null && d.fee !== "") {
+        fee = Math.max(0, Math.floor(Number(d.fee) || 0));
+      } else {
+        const courseRow = await one(
+          db,
+          "SELECT c.fee FROM courses c JOIN batches b ON b.course_id=c.id WHERE b.id=?",
+          g.batch_id,
+        );
+        fee = Math.max(0, Number(courseRow?.fee) || 0);
+      }
+      for (const email of resolvedEmails) {
+        await run(
+          db,
+          "INSERT OR IGNORE INTO group_members (group_id,email) VALUES (?,?)",
+          g.id,
+          email,
+        );
+        const person = await one(
+          db,
+          "SELECT id FROM users WHERE lower(email)=?",
+          email,
+        );
+        if (person) {
+          await run(
+            db,
+            "INSERT OR IGNORE INTO enrollments (id,user_id,batch_id,fee,created) VALUES (?,?,?,?,?)",
+            uid(),
+            person.id,
+            g.batch_id,
+            fee,
+            now(),
+          );
+        }
+        await run(
+          db,
+          "INSERT OR IGNORE INTO invitations (id,email,batch_id,role,fee) VALUES (?,?,?,'student',?)",
+          uid(),
+          email,
+          g.batch_id,
+          fee,
+        );
+      }
+      if (g.google_group) {
+        await queueJob(db, "google_group_update", g.batch_id, g.id, {
+          google_group: g.google_group,
+          add: resolvedEmails,
+          remove: [],
+        });
+        if (env.AZURE_ENGINE_URL) {
+          try {
+            await wakeEngine(env);
+          } catch {}
+        }
+      }
+    } else {
+      for (const email of resolvedEmails) {
+        await run(
+          db,
+          "DELETE FROM group_members WHERE group_id=? AND lower(email)=?",
+          g.id,
+          email,
+        );
+      }
+      if (g.google_group) {
+        await queueJob(db, "google_group_update", g.batch_id, g.id, {
+          google_group: g.google_group,
+          add: [],
+          remove: resolvedEmails,
+        });
+        if (env.AZURE_ENGINE_URL) {
+          try {
+            await wakeEngine(env);
+          } catch {}
+        }
+      }
+    }
+    await run(
+      db,
+      "INSERT INTO audit (id,actor,action,entity,created) VALUES (?,?,?,?,?)",
+      uid(),
+      u.id,
+      `group_members:${action}`,
+      g.id,
+      now(),
+    );
+    return json({ ok: true, count: resolvedEmails.length });
+  }
   if (p === "/api/admin/access" && req.method === "POST") {
     admin(u);
     const d = await req.json();

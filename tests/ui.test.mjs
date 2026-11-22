@@ -431,3 +431,138 @@ test("content inbox file-type filters, bulk select/approve/reject, and student i
     delete globalThis.IS_REACT_ACT_ENVIRONMENT;
   }
 });
+
+test("Students & Team cleanly separates Students, Trainers & Admins, and Batch Groups assignment flow", async () => {
+  const dom = new JSDOM('<html><body><div id="root"></div></body></html>', {
+    url: "https://campus.test",
+  });
+  Object.assign(globalThis, {
+    window: dom.window,
+    document: dom.window.document,
+    HTMLElement: dom.window.HTMLElement,
+    sessionStorage: dom.window.sessionStorage,
+    IS_REACT_ACT_ENVIRONMENT: true,
+  });
+  Object.defineProperty(globalThis, "navigator", {
+    value: dom.window.navigator,
+    configurable: true,
+  });
+  const env = {
+    DB: await database(),
+    BUCKET: memoryBucket(),
+    LOCAL_DEV_OWNER: "true",
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (path, options = {}) => {
+    const headers = new Headers(options.headers);
+    headers.set("oai-authenticated-user-id", "owner");
+    headers.set("oai-authenticated-user-email", "owner@arks.test");
+    headers.set("oai-authenticated-user-full-name", "Campus Owner");
+    return api(
+      new Request(new URL(path, "https://campus.test"), {
+        ...options,
+        headers,
+      }),
+      env,
+    );
+  };
+  await fs.mkdir(".local", { recursive: true });
+  await build({
+    entryPoints: ["src/main.jsx"],
+    bundle: true,
+    format: "esm",
+    platform: "node",
+    outfile: ".local/ui-test-people.mjs",
+    packages: "external",
+    loader: { ".css": "empty" },
+  });
+  const { act } = await import("react");
+  async function settle(fn = () => {}) {
+    await act(async () => {
+      await fn();
+      await new Promise((r) => setTimeout(r, 40));
+    });
+  }
+  try {
+    await globalThis.fetch("/api/bootstrap");
+    // Seed 1 student, 1 trainer, and 1 batch group
+    await globalThis.fetch("/api/admin/users", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "Rohan Learner",
+        email: "rohan.learner@arks.test",
+        role: "student",
+      }),
+    });
+    await globalThis.fetch("/api/admin/users", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "Meera Instructor",
+        email: "meera.trainer@arks.test",
+        role: "trainer",
+      }),
+    });
+    await globalThis.fetch("/api/admin/group", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        batch_id: "sandbox",
+        name: "Evening Cohort Group",
+        members: "",
+      }),
+    });
+
+    await settle(() =>
+      import("../.local/ui-test-people.mjs?test=" + Date.now()),
+    );
+    const closeBtn = document.querySelector('[aria-label="Close dialog"]');
+    if (closeBtn) await settle(() => closeBtn.click());
+    const button = (s) =>
+      [...document.querySelectorAll("button")].find(
+        (b) => b.textContent.trim() === s,
+      );
+    const skipBtn = button("Skip");
+    if (skipBtn) await settle(() => skipBtn.click());
+
+    // Open Students & Team workspace
+    await settle(() => button("Students & Team").click());
+    const subTabs = [...document.querySelectorAll(".admin-tabs button")].map(
+      (b) => b.textContent.trim(),
+    );
+    assert.deepEqual(subTabs, [
+      "Students",
+      "Trainers & Admins",
+      "Batch Groups",
+      "Fees & Payments",
+    ]);
+
+    // Students tab shows ONLY students, not trainers/admins
+    assert.match(document.body.textContent, /Rohan Learner/);
+    assert.doesNotMatch(document.body.textContent, /Meera Instructor/);
+    assert.ok(button("Create Student"), "Expected Create Student button");
+
+    // Switch to Trainers & Admins tab -> shows ONLY staff, not students
+    await settle(() => button("Trainers & Admins").click());
+    assert.match(document.body.textContent, /Meera Instructor/);
+    assert.match(document.body.textContent, /Campus Owner/);
+    assert.doesNotMatch(document.body.textContent, /Rohan Learner/);
+    assert.ok(
+      button("Create Trainer / Admin"),
+      "Expected Create Trainer / Admin button",
+    );
+
+    // Switch to Batch Groups tab -> shows Step 1, Step 2 (existing students), Step 3
+    await settle(() => button("Batch Groups").click());
+    assert.match(document.body.textContent, /Step 1 — Select Batch & Batch Group/);
+    assert.match(document.body.textContent, /Evening Cohort Group/);
+    assert.match(document.body.textContent, /Step 2 — Add Existing Students/);
+    assert.match(document.body.textContent, /Rohan Learner/);
+    assert.match(document.body.textContent, /Step 3 — Current Group Members/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    dom.window.close();
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+  }
+});

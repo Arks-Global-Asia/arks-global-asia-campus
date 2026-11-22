@@ -118,8 +118,8 @@ const ADMIN_WORKSPACES = [
   {
     id: "people",
     label: "Students & Team",
-    defaultTab: "users",
-    tabs: ["users", "invitations", "access", "payments"],
+    defaultTab: "students",
+    tabs: ["students", "staff", "access", "payments"],
   },
   {
     id: "support",
@@ -1453,6 +1453,7 @@ function App() {
   function Admin() {
     const [reportTestId, setReportTestId] = useState("all");
     const [userBatchFilter, setUserBatchFilter] = useState("all");
+    const [studentSearch, setStudentSearch] = useState("");
     if (!adminData)
       return (
         <div className="loading">
@@ -1473,9 +1474,9 @@ function App() {
       ["tests", "Assessments"],
       ["reports", "Results & Grading"],
       ["submissions", "Lab Reviews"],
-      ["users", "Students & People"],
-      ["invitations", "Batch Enrollments"],
-      ["access", "Groups & Staff Access"],
+      ["students", "Students"],
+      ["staff", "Trainers & Admins"],
+      ["access", "Batch Groups"],
       ...(isHeadAdmin ? [["payments", "Fees & Payments"]] : []),
       ["tickets", "Student Queries"],
       ["audit", "Activity Log"],
@@ -1492,7 +1493,8 @@ function App() {
       submissions: "Help every student grow",
       tickets: "Conversations that matter",
       payments: "Keep fees transparent",
-      users: "Your learning community",
+      students: "Students",
+      staff: "Trainers & Admins",
       courses: "Build a reusable curriculum",
       reports: "Assessment Results, Diagnostics & Grading Center",
       audit: "Campus activity",
@@ -1671,24 +1673,14 @@ function App() {
                         ? "Create batch"
                         : "Create course"}
               </Button>
-            ) : adminTab === "users" ? (
-              <div className="row gap wrap">
-                <Button
-                  onClick={() =>
-                    edit(
-                      "invitations",
-                      userBatchFilter !== "all"
-                        ? { batch_id: userBatchFilter }
-                        : null,
-                    )
-                  }
-                >
-                  <Plus size={16} /> Add Student to Batch
-                </Button>
-                <Button secondary onClick={() => setAdminTab("access")}>
-                  Bulk Add Students (CSV)
-                </Button>
-              </div>
+            ) : adminTab === "students" ? (
+              <Button onClick={() => setModal({ type: "create_student" })}>
+                <Plus size={16} /> Create Student
+              </Button>
+            ) : adminTab === "staff" && isHeadAdmin ? (
+              <Button onClick={() => setModal({ type: "create_staff" })}>
+                <Plus size={16} /> Create Trainer / Admin
+              </Button>
             ) : adminTab === "payments" && isHeadAdmin ? (
               <Button onClick={() => setModal({ type: "payment" })}>
                 <Plus size={16} /> Record payment
@@ -1765,9 +1757,9 @@ function App() {
                   ],
                   [
                     "04",
-                    "Onboard Students (Single or Bulk CSV)",
-                    "Invite students by email or bulk CSV upload.",
-                    "access",
+                    "Create Students & Assign Batch Groups",
+                    "Create student accounts first, then assign them to Batch Groups.",
+                    "students",
                   ],
                 ].map(([num, title, body, tab]) => (
                   <button
@@ -1988,36 +1980,87 @@ function App() {
           })()
         ) : (
           <section className="panel table-panel">
-            {adminTab === "users" && (
+            {adminTab === "students" && (
               <div
                 className="row between wrap gap"
                 style={{ padding: "12px 16px 8px" }}
               >
-                <label className="row gap">
-                  <span>Filter by Batch</span>
-                  <select
-                    value={userBatchFilter}
-                    onChange={(e) => setUserBatchFilter(e.target.value)}
-                  >
-                    <option value="all">All Batches</option>
-                    {a.batches.map((b) => (
-                      <option key={b.id} value={b.id}>
-                        {b.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                <div className="row gap wrap">
+                  <input
+                    type="search"
+                    aria-label="Search students"
+                    placeholder="Search students by name or email…"
+                    value={studentSearch}
+                    onChange={(e) => setStudentSearch(e.target.value)}
+                  />
+                  <label className="row gap">
+                    <span>Batch</span>
+                    <select
+                      value={userBatchFilter}
+                      onChange={(e) => setUserBatchFilter(e.target.value)}
+                    >
+                      <option value="all">All Batches</option>
+                      <option value="unassigned">Unassigned (No Batch)</option>
+                      {a.batches.map((b) => (
+                        <option key={b.id} value={b.id}>
+                          {b.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
                 <small className="muted">
-                  Tip: Click <b>+ Assign Batch</b> on any student or{" "}
-                  <b>+ Add Student to Batch</b> above.
+                  Create students here, then assign them to cohorts in{" "}
+                  <button
+                    type="button"
+                    className="text-btn"
+                    onClick={() => setAdminTab("access")}
+                  >
+                    Batch Groups
+                  </button>
+                  .
                 </small>
               </div>
             )}
             {(() => {
               const tableRows =
-                adminTab === "users" && userBatchFilter !== "all"
-                  ? (a.users || []).filter(
-                      (u) =>
+                adminTab === "students"
+                  ? (a.users || []).filter((u) => {
+                      if (u.role !== "student") return false;
+                      const q = studentSearch.trim().toLowerCase();
+                      if (
+                        q &&
+                        !String(u.name || "")
+                          .toLowerCase()
+                          .includes(q) &&
+                        !String(u.email || "")
+                          .toLowerCase()
+                          .includes(q) &&
+                        !String(u.phone || "")
+                          .toLowerCase()
+                          .includes(q)
+                      )
+                        return false;
+                      if (userBatchFilter === "all") return true;
+                      const userEmail = String(u.email || "").toLowerCase();
+                      const userGroupBatchIds = (a.group_members || [])
+                        .filter(
+                          (m) => String(m.email || "").toLowerCase() === userEmail,
+                        )
+                        .map(
+                          (m) =>
+                            (a.access_groups || []).find(
+                              (g) => g.id === m.group_id,
+                            )?.batch_id,
+                        )
+                        .filter(Boolean);
+                      if (userBatchFilter === "unassigned") {
+                        return (
+                          !a.enrollments.some((e) => e.user_id === u.id) &&
+                          userGroupBatchIds.length === 0
+                        );
+                      }
+                      return (
                         a.enrollments.some(
                           (e) =>
                             e.user_id === u.id &&
@@ -2025,11 +2068,17 @@ function App() {
                         ) ||
                         a.invitations.some(
                           (inv) =>
-                            inv.email.toLowerCase() === u.email.toLowerCase() &&
+                            inv.email.toLowerCase() === userEmail &&
                             inv.batch_id === userBatchFilter,
-                        ),
-                    )
-                  : a[adminTab] || [];
+                        ) ||
+                        userGroupBatchIds.includes(userBatchFilter)
+                      );
+                    })
+                  : adminTab === "staff"
+                    ? (a.users || []).filter(
+                        (u) => u.role === "trainer" || u.role === "admin",
+                      )
+                    : a[adminTab] || [];
               return tableRows.length ? (
                 <div className="table-wrap">
                   <table>
@@ -2066,36 +2115,45 @@ function App() {
                                       "Status",
                                       "",
                                     ]
-                                  : adminTab === "users"
+                                  : adminTab === "students"
                                     ? [
                                         "Name",
                                         "Email",
-                                        "Enrolled Batches",
-                                        "Role",
+                                        "Batches & Groups",
+                                        "Status",
                                         "Joined",
                                         "",
                                       ]
-                                    : adminTab === "submissions"
-                                      ? ["Student", "Lab", "Batch", "Status", ""]
-                                      : adminTab === "tickets"
-                                        ? [
-                                            "Student",
-                                            "Subject",
-                                            "Category",
-                                            "Status",
-                                            "Created",
-                                            "",
-                                          ]
-                                        : adminTab === "payments"
+                                    : adminTab === "staff"
+                                      ? [
+                                          "Name",
+                                          "Email",
+                                          "Role",
+                                          "Status",
+                                          "Joined",
+                                          "",
+                                        ]
+                                      : adminTab === "submissions"
+                                        ? ["Student", "Lab", "Batch", "Status", ""]
+                                        : adminTab === "tickets"
                                           ? [
                                               "Student",
-                                              "Batch",
-                                              "Amount",
-                                              "Reference",
-                                              "Date",
+                                              "Subject",
+                                              "Category",
+                                              "Status",
+                                              "Created",
                                               "",
                                             ]
-                                          : ["Actor", "Action", "Record", "Date"]
+                                          : adminTab === "payments"
+                                            ? [
+                                                "Student",
+                                                "Batch",
+                                                "Amount",
+                                                "Reference",
+                                                "Date",
+                                                "",
+                                              ]
+                                            : ["Actor", "Action", "Record", "Date"]
                         ).map((h, i) => (
                           <th key={i}>{h}</th>
                         ))}
@@ -2128,11 +2186,12 @@ function App() {
                                 <div className="row gap wrap">
                                   <button
                                     className="text-btn"
-                                    onClick={() =>
-                                      edit("invitations", { batch_id: v.id })
-                                    }
+                                    onClick={() => {
+                                      setBatchId(v.id);
+                                      setAdminTab("access");
+                                    }}
                                   >
-                                    + Add Student
+                                    Manage Group
                                   </button>
                                   <button
                                     className="text-btn"
@@ -2284,11 +2343,25 @@ function App() {
                               </div>
                             </td>
                           </>
-                        ) : adminTab === "users" ? (
+                        ) : adminTab === "students" ? (
                           (() => {
                             const userBatches = a.enrollments
                               .filter((e) => e.user_id === v.id)
                               .map((e) => batchName(e.batch_id));
+                            const userEmail = String(v.email || "").toLowerCase();
+                            const userGroups = (a.group_members || [])
+                              .filter(
+                                (m) =>
+                                  String(m.email || "").toLowerCase() ===
+                                  userEmail,
+                              )
+                              .map(
+                                (m) =>
+                                  (a.access_groups || []).find(
+                                    (g) => g.id === m.group_id,
+                                  )?.name,
+                              )
+                              .filter(Boolean);
                             return (
                               <>
                                 <td>
@@ -2301,33 +2374,37 @@ function App() {
                                     <b>{v.name}</b> ↗
                                   </button>
                                 </td>
-                                <td>{v.email}</td>
+                                <td>
+                                  {v.email}
+                                  {v.phone ? (
+                                    <>
+                                      <br />
+                                      <small className="muted">{v.phone}</small>
+                                    </>
+                                  ) : null}
+                                </td>
                                 <td>
                                   <div className="row gap wrap">
-                                    {userBatches.length ? (
-                                      userBatches.map((bn, idx) => (
-                                        <Badge key={idx} tone="green">
-                                          {bn}
-                                        </Badge>
-                                      ))
-                                    ) : (
+                                    {userBatches.map((bn, idx) => (
+                                      <Badge key={"b-" + idx} tone="green">
+                                        {bn}
+                                      </Badge>
+                                    ))}
+                                    {userGroups.map((gn, idx) => (
+                                      <Badge key={"g-" + idx} tone="blue">
+                                        {gn}
+                                      </Badge>
+                                    ))}
+                                    {!userBatches.length && !userGroups.length && (
                                       <small className="muted">
-                                        Not enrolled
+                                        Not assigned
                                       </small>
                                     )}
                                   </div>
                                 </td>
                                 <td>
-                                  <Badge
-                                    tone={
-                                      v.role === "admin"
-                                        ? "blue"
-                                        : v.role === "trainer"
-                                          ? "purple"
-                                          : ""
-                                    }
-                                  >
-                                    {v.role}
+                                  <Badge tone={v.active ? "green" : "amber"}>
+                                    {v.active ? "Active" : "Disabled"}
                                   </Badge>
                                 </td>
                                 <td>{date(v.created)}</td>
@@ -2336,27 +2413,28 @@ function App() {
                                     <button
                                       className="text-btn"
                                       onClick={() =>
-                                        edit("invitations", { email: v.email })
-                                      }
-                                    >
-                                      + Assign Batch
-                                    </button>
-                                    <button
-                                      className="text-btn"
-                                      onClick={() =>
                                         setModal({ type: "student360", item: v })
                                       }
                                     >
-                                      360° profile
+                                      360° Profile
                                     </button>
-                                    {isHeadAdmin && v.id !== boot.user.id && (
+                                    {isHeadAdmin && (
                                       <button
                                         className="text-btn"
                                         onClick={() =>
-                                          setModal({ type: "role", item: v })
+                                          act(
+                                            () =>
+                                              api("admin/access", {
+                                                user_id: v.id,
+                                                active: !v.active,
+                                              }),
+                                            v.active
+                                              ? `Disabled ${v.name}.`
+                                              : `Enabled ${v.name}.`,
+                                          )
                                         }
                                       >
-                                        Change role
+                                        {v.active ? "Disable" : "Enable"}
                                       </button>
                                     )}
                                   </div>
@@ -2364,6 +2442,82 @@ function App() {
                               </>
                             );
                           })()
+                        ) : adminTab === "staff" ? (
+                          <>
+                            <td>
+                              <b>{v.name}</b>
+                            </td>
+                            <td>
+                              {v.email}
+                              {v.phone ? (
+                                <>
+                                  <br />
+                                  <small className="muted">{v.phone}</small>
+                                </>
+                              ) : null}
+                            </td>
+                            <td>
+                              <Badge
+                                tone={v.role === "admin" ? "blue" : "purple"}
+                              >
+                                {v.role === "admin"
+                                  ? "Head / Admin"
+                                  : "Trainer / Instructor"}
+                              </Badge>
+                            </td>
+                            <td>
+                              <Badge tone={v.active ? "green" : "amber"}>
+                                {v.active ? "Active" : "Disabled"}
+                              </Badge>
+                            </td>
+                            <td>{date(v.created)}</td>
+                            <td>
+                              {isHeadAdmin && (
+                                <div className="row gap wrap">
+                                  {v.id !== boot.user.id && (
+                                    <button
+                                      className="text-btn"
+                                      onClick={() =>
+                                        setModal({ type: "role", item: v })
+                                      }
+                                    >
+                                      Change Role
+                                    </button>
+                                  )}
+                                  <button
+                                    className="text-btn"
+                                    onClick={() =>
+                                      setModal({
+                                        type: "reset_password",
+                                        item: v,
+                                      })
+                                    }
+                                  >
+                                    Reset Password
+                                  </button>
+                                  {v.id !== boot.user.id && (
+                                    <button
+                                      className="text-btn"
+                                      onClick={() =>
+                                        act(
+                                          () =>
+                                            api("admin/access", {
+                                              user_id: v.id,
+                                              active: !v.active,
+                                            }),
+                                          v.active
+                                            ? `Disabled ${v.name}.`
+                                            : `Enabled ${v.name}.`,
+                                        )
+                                      }
+                                    >
+                                      {v.active ? "Disable" : "Enable"}
+                                    </button>
+                                  )}
+                                </div>
+                              )}
+                            </td>
+                          </>
                         ) : adminTab === "submissions" ? (
                           <>
                             <td>{name(v.user_id)}</td>
@@ -2487,14 +2641,22 @@ function App() {
                     ? "All caught up"
                     : adminTab === "tickets"
                       ? "No open conversations"
-                      : "A fresh start"
+                      : adminTab === "students"
+                        ? "No students found"
+                        : adminTab === "staff"
+                          ? "No trainers or admins yet"
+                          : "A fresh start"
                 }
                 body={
                   adminTab === "submissions"
                     ? "Student lab submissions will appear here for review."
-                    : adminTab === "invitations"
-                      ? "Enroll students using the email they will use to sign in. This records their enrollment; it does not send email."
-                      : "New records will appear here as your campus grows."
+                    : adminTab === "students"
+                      ? "Click + Create Student above to add a student account, then assign them to a Batch Group."
+                      : adminTab === "staff"
+                        ? "Head Administrators can add Trainer or Admin accounts from this tab."
+                        : adminTab === "invitations"
+                          ? "Enroll students using the email they will use to sign in. This records their enrollment; it does not send email."
+                          : "New records will appear here as your campus grows."
                 }
               />
             );
@@ -2811,6 +2973,9 @@ function App() {
                             review: "Review lab submission",
                             reply: "Reply to a query",
                             role: "Change account role",
+                            create_student: "Create Student",
+                            create_staff: "Create Trainer / Admin",
+                            reset_password: "Reset Staff Password",
                             updates: "Your campus updates",
                           }[modal?.type] || "Campus"
           }
@@ -3053,6 +3218,117 @@ function App() {
                     setModal(null);
                 }}
                 label="Send reply"
+              />
+            </>
+          ) : modal.type === "create_student" ? (
+            <>
+              <p>
+                Create a student account without assigning a batch yet. You can
+                assign students to cohorts anytime in <b>Batch Groups</b>.
+              </p>
+              <SimpleForm
+                fields={[
+                  ["name", "Full name", "text"],
+                  ["email", "Email address", "email"],
+                  ["phone", "Phone number (optional)", "tel"],
+                ]}
+                save={async (values) => {
+                  if (
+                    await act(
+                      () =>
+                        api("admin/users", {
+                          name: values.name,
+                          email: values.email,
+                          phone: values.phone || "",
+                          role: "student",
+                        }),
+                      "Student created.",
+                    )
+                  )
+                    setModal(null);
+                }}
+                label="Create Student"
+              />
+            </>
+          ) : modal.type === "create_staff" ? (
+            <>
+              <p>
+                Add a <b>Trainer / Instructor</b> or <b>Head / Administrator</b>{" "}
+                account. Provide a password (14+ chars) to enable immediate
+                email &amp; password sign-in, or leave it blank for Google
+                OAuth.
+              </p>
+              <SimpleForm
+                initial={{ role: "trainer" }}
+                fields={[
+                  ["name", "Full name", "text"],
+                  ["email", "Email address", "email"],
+                  ["phone", "Phone number (optional)", "tel"],
+                  [
+                    "role",
+                    "Account role",
+                    "select",
+                    [
+                      { value: "trainer", label: "Trainer / Instructor" },
+                      { value: "admin", label: "Head / Administrator" },
+                    ],
+                  ],
+                  [
+                    "optional_password",
+                    "Password (optional, 14+ chars for password sign-in)",
+                    "password",
+                  ],
+                ]}
+                save={async (values) => {
+                  if (
+                    await act(
+                      () =>
+                        api("admin/users", {
+                          name: values.name,
+                          email: values.email,
+                          phone: values.phone || "",
+                          role: values.role,
+                          password: values.optional_password || undefined,
+                        }),
+                      "Staff account created.",
+                    )
+                  )
+                    setModal(null);
+                }}
+                label="Create Trainer / Admin"
+              />
+            </>
+          ) : modal.type === "reset_password" ? (
+            <>
+              <p>
+                Set or reset the staff sign-in password for{" "}
+                <b>{modal.item.name}</b> ({modal.item.email}). Passwords must be
+                at least 14 characters.
+              </p>
+              <SimpleForm
+                fields={[
+                  [
+                    "password",
+                    "New password (at least 14 characters)",
+                    "password",
+                  ],
+                ]}
+                save={async (values) => {
+                  if (
+                    await act(
+                      () =>
+                        api("admin/password", {
+                          email: modal.item.email,
+                          name: modal.item.name,
+                          role: modal.item.role,
+                          password: values.password,
+                        }),
+                      "Staff password updated.",
+                    )
+                  )
+                    setModal(null);
+                }}
+                label="Save password"
               />
             </>
           ) : modal.type === "role" ? (
@@ -3416,7 +3692,12 @@ function SimpleForm({
             </select>
           ) : (
             <input
-              required={key !== "phone"}
+              required={!["phone", "optional_password"].includes(key)}
+              minLength={
+                key === "password" || key === "optional_password"
+                  ? 14
+                  : undefined
+              }
               step={key === "amount" ? "0.01" : undefined}
               min={key === "amount" ? "0.01" : undefined}
               type={type || "text"}

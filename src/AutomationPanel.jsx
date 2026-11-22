@@ -726,7 +726,10 @@ export default function AutomationPanel({ batches, onPublished }) {
                   {i.status === "pending" || i.status === "restricted" ? (
                     <button
                       className="button secondary"
-                      onClick={() => setReview(i)}
+                      onClick={() => {
+                        setError("");
+                        setReview(i);
+                      }}
                     >
                       {i.status === "restricted"
                         ? "Override category & release"
@@ -779,10 +782,17 @@ export default function AutomationPanel({ batches, onPublished }) {
         </Dialog>
       )}
       {review && (
-        <Dialog title="Review before release" close={() => setReview(null)}>
+        <Dialog
+          title="Review before release"
+          close={() => {
+            setReview(null);
+            setError("");
+          }}
+        >
           <ReviewForm
             item={review}
             busy={busy}
+            error={error}
             submit={async (values) => {
               if (
                 await action(
@@ -992,7 +1002,7 @@ function SourceForm({ initial, batches, save }) {
   );
 }
 
-function ReviewForm({ item: i, submit, busy }) {
+function ReviewForm({ item: i, submit, busy, error }) {
   const [v, setV] = useState({
     title: i.title,
     kind: i.kind === "private" ? "notes" : i.kind,
@@ -1098,11 +1108,12 @@ function ReviewForm({ item: i, submit, busy }) {
             type="url"
             value={v.student_url}
             onChange={(e) => setV({ ...v, student_url: e.target.value })}
-            placeholder="https://docs.google.com/forms/d/…/viewform"
+            placeholder="https://forms.gle/... or https://docs.google.com/forms/d/…/viewform"
           />
           <small>
-            Use the student response link. Never publish an edit link, answer
-            key or response sheet.
+            Use the published student response link (https://forms.gle/... or
+            https://docs.google.com/forms/d/…/viewform). Never publish an edit
+            link, answer key or response sheet.
           </small>
         </label>
       )}
@@ -1126,6 +1137,11 @@ function ReviewForm({ item: i, submit, busy }) {
         I reviewed this revision, including presenter notes, and confirm it is
         ready for students.
       </label>
+      {error && (
+        <div className="error-banner" role="alert">
+          {error}
+        </div>
+      )}
       <div className="row between">
         <button
           className="button secondary"

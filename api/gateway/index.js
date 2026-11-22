@@ -86291,13 +86291,14 @@ async function adminAutomation(req, env, u) {
     if (effectiveKind === "test_link") {
       try {
         const parsed = new URL(d.student_url);
-        if (parsed.protocol !== "https:" || parsed.hostname !== "docs.google.com" || !/^\/forms\/d\/(?:e\/)?[\w-]+\/viewform$/.test(parsed.pathname))
-          throw 0;
+        const isDocsForm = parsed.protocol === "https:" && parsed.hostname === "docs.google.com" && /^\/forms\/d\/(?:e\/)?[\w-]+\/viewform\/?$/.test(parsed.pathname);
+        const isShortForm = parsed.protocol === "https:" && parsed.hostname === "forms.gle" && /^\/[\w-]{6,64}\/?$/.test(parsed.pathname);
+        if (!isDocsForm && !isShortForm) throw 0;
         url3 = parsed.href;
       } catch {
         fail2(
           400,
-          "Paste the published Google Form student link ending in /viewform."
+          "Paste a published Google Form student link (https://forms.gle/... or https://docs.google.com/forms/.../viewform)."
         );
       }
     }

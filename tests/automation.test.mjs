@@ -293,6 +293,47 @@ test("external test release requires a student form URL, not an editor or answer
   assert.equal(c.url, "");
 });
 
+test("external test release accepts official forms.gle short responder links while rejecting edit links", async () => {
+  const { call, source } = await setup();
+  const r = (await call("automation/claim", { source_id: source })).data;
+  const i = (
+    await call("automation/ingest", {
+      run_id: r.run_id,
+      items: [
+        item({
+          drive_file_id: "file_form_short_123",
+          url: "https://drive.google.com/file/d/file_form_short_123/view",
+          name: "Day11_Quiz_Form",
+          source_path: "knowledge_tests",
+          mime: "application/vnd.google-apps.form",
+        }),
+      ],
+    })
+  ).data.items[0];
+  const editRes = await call(
+    "admin/automation/review",
+    {
+      id: i.id,
+      action: "approve",
+      confirmed_student_safe: true,
+      student_url: "https://docs.google.com/forms/d/1FAIpQLScExample/edit",
+    },
+    owner,
+  );
+  assert.equal(editRes.status, 400);
+  const shortRes = await call(
+    "admin/automation/review",
+    {
+      id: i.id,
+      action: "approve",
+      confirmed_student_safe: true,
+      student_url: "https://forms.gle/DZ5gPr3xJgSZyRM68",
+    },
+    owner,
+  );
+  assert.equal(shortRes.status, 200);
+});
+
 test("images, resource_creation guides, yaml/sh scripts, exclusion filters, category override and 1-click bunch approval work end-to-end", async () => {
   assert.equal(
     classifyMaterial("k8s-architecture.png", "batch/images", "image/png"),

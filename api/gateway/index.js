@@ -85321,6 +85321,35 @@ async function featureRoutes(req, env, u) {
     }
     return json({ ok: true });
   }
+  if (p === "/api/admin/batch-course" && req.method === "POST") {
+    staff(u);
+    const d = await req.json();
+    const batchId = String(d.batch_id || "").trim();
+    const courseId = String(d.course_id || "").trim();
+    if (!batchId || !courseId || !await one(db, "SELECT id FROM batches WHERE id=?", batchId) || !await one(db, "SELECT id FROM courses WHERE id=?", courseId))
+      fail(400, "Choose a valid batch and course.");
+    await run(
+      db,
+      "UPDATE batches SET course_id=? WHERE id=?",
+      courseId,
+      batchId
+    );
+    await run(
+      db,
+      "INSERT INTO audit (id,actor,action,entity,created) VALUES (?,?,?,?,?)",
+      uid(),
+      u.id,
+      "assign_course:batch",
+      batchId,
+      now()
+    );
+    return json({
+      ok: true,
+      batch_id: batchId,
+      course_id: courseId,
+      message: "Course assigned to batch."
+    });
+  }
   if (p === "/api/admin/users" && req.method === "POST") {
     staff(u);
     const d = await req.json();
@@ -88092,13 +88121,6 @@ async function adminApi(req, db, u, p) {
       }
       if (!/^\d{4}-\d{2}-\d{2}$/.test(v.start_date) || !/^\d{4}-\d{2}-\d{2}$/.test(v.end_date) || v.end_date < v.start_date)
         fail3(400, "Choose valid batch dates.");
-      const old = await one3(
-        db,
-        "SELECT course_id FROM batches WHERE id=?",
-        key
-      );
-      if (old && old.course_id !== v.course_id)
-        fail3(400, "Create a new batch to change the course.");
       fields = {
         course_id: v.course_id,
         name: required(v.name, "Name"),

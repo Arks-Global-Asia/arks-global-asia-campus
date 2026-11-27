@@ -509,11 +509,12 @@ export function AdminTools({
               key={batch.id}
               batch={batch}
               data={data}
+              features={features}
               save={save}
               pending={pending}
+              preferredGroupId={preferredGroupId}
               onGroupCreated={(id) => {
                 setPreferredGroupId(id);
-                onNavigateTab?.("access");
               }}
               onNavigateTab={onNavigateTab}
             />
@@ -1434,22 +1435,12 @@ function GroupsMembers({
       "",
   );
 
-  // Add existing users state
+  // Add students state
   const [userSearch, setUserSearch] = useState("");
   const [roleFilter, setRoleFilter] = useState("students");
   const [selectedUserIds, setSelectedUserIds] = useState([]);
-  const [agreedFee, setAgreedFee] = useState("");
-
-  // Create & add new student(s) state
-  const [addStudentName, setAddStudentName] = useState("");
-  const [addStudentEmail, setAddStudentEmail] = useState("");
-  const [addStudentPhone, setAddStudentPhone] = useState("");
-  const [addStudentFee, setAddStudentFee] = useState("");
-  const [addInviteLines, setAddInviteLines] = useState("");
-
-  // Bulk CSV state
-  const [csvText, setCsvText] = useState("");
-  const [defaultFee, setDefaultFee] = useState(0);
+  const [quickEmail, setQuickEmail] = useState("");
+  const [quickName, setQuickName] = useState("");
 
   useEffect(() => {
     if (
@@ -1468,10 +1459,21 @@ function GroupsMembers({
   }, [batch.id, allGroups.length, batchGroups.length, preferredGroupId, groupId]);
 
   const selectedGroup = allGroups.find((g) => g.id === groupId) || null;
-  const selectedGroupBatchName = selectedGroup
-    ? data.batches.find((b) => b.id === selectedGroup.batch_id)?.name ||
-      batch.name
-    : batch.name;
+  const targetBatch =
+    (selectedGroup &&
+      data.batches.find((b) => b.id === selectedGroup.batch_id)) ||
+    batch;
+  const attachedCourse = (data.courses || []).find(
+    (c) => c.id === targetBatch?.course_id,
+  );
+  const [selectedCourseId, setSelectedCourseId] = useState(
+    () => targetBatch?.course_id || data.courses?.[0]?.id || "",
+  );
+
+  useEffect(() => {
+    setSelectedCourseId(targetBatch?.course_id || data.courses?.[0]?.id || "");
+  }, [targetBatch?.id, targetBatch?.course_id, data.courses?.length]);
+
   const currentMembers = selectedGroup
     ? (features.members || []).filter((m) => m.group_id === selectedGroup.id)
     : [];
@@ -1500,12 +1502,13 @@ function GroupsMembers({
     (u) => !memberEmailSet.has(String(u.email || "").toLowerCase()),
   );
 
-  const existingNewStudents = buildNewStudentsPayload(
-    addStudentName,
-    addStudentEmail,
-    addStudentPhone,
-    addInviteLines,
+  const quickNewStudents = buildNewStudentsPayload(
+    quickName,
+    quickEmail,
+    "",
+    "",
   );
+  const totalToAdd = selectedUserIds.length + quickNewStudents.length;
 
   function memberCountFor(gId) {
     return (features.members || []).filter((m) => m.group_id === gId).length;
@@ -1516,10 +1519,10 @@ function GroupsMembers({
       <section className="panel form">
         <div className="row between wrap gap">
           <div>
-            <h3>Groups in {batch.name}</h3>
+            <h3>Select Group</h3>
             <p className="help-note">
-              Select a group below to view or remove members, add existing
-              users, or create &amp; invite new students.
+              Choose a group in <b>{batch.name}</b> to manage students and its
+              attached course.
             </p>
           </div>
           {onNavigateTab && (
@@ -1528,7 +1531,7 @@ function GroupsMembers({
               className="button"
               onClick={() => onNavigateTab("create_group")}
             >
-              Go to Create Group
+              + Create New Group
             </button>
           )}
         </div>
@@ -1537,30 +1540,27 @@ function GroupsMembers({
           <div className="builder">
             <p className="help-note">
               No groups exist for <b>{batch.name}</b> yet. Click{" "}
-              <b>Go to Create Group</b> to create one.
+              <b>+ Create New Group</b> to create an empty group first.
             </p>
             {allGroups.length > 0 && (
-              <>
-                <h4>Groups Across All Batches ({allGroups.length})</h4>
-                <Select
-                  label="Select a Group from Another Batch"
-                  value={groupId}
-                  onChange={(nextId) => {
-                    setGroupId(nextId);
-                    setSelectedUserIds([]);
-                  }}
-                  options={allGroups.map((g) => {
-                    const bName =
-                      data.batches.find((b) => b.id === g.batch_id)?.name ||
-                      g.batch_id;
-                    const count = memberCountFor(g.id);
-                    return [
-                      g.id,
-                      `${g.name} — ${bName} (${count} ${count === 1 ? "member" : "members"})`,
-                    ];
-                  })}
-                />
-              </>
+              <Select
+                label="Select a Group from Another Batch"
+                value={groupId}
+                onChange={(nextId) => {
+                  setGroupId(nextId);
+                  setSelectedUserIds([]);
+                }}
+                options={allGroups.map((g) => {
+                  const bName =
+                    data.batches.find((b) => b.id === g.batch_id)?.name ||
+                    g.batch_id;
+                  const count = memberCountFor(g.id);
+                  return [
+                    g.id,
+                    `${g.name} — ${bName} (${count} ${count === 1 ? "student" : "students"})`,
+                  ];
+                })}
+              />
             )}
           </div>
         ) : (
@@ -1578,95 +1578,91 @@ function GroupsMembers({
                 : g.name;
               return [
                 g.id,
-                `${base} · ${count} ${count === 1 ? "member" : "members"}`,
+                `${base} · ${count} ${count === 1 ? "student" : "students"}`,
               ];
             })}
           />
         )}
       </section>
 
+      <form
+        className="panel form"
+        onSubmit={async (e) => {
+          e.preventDefault();
+          if (!targetBatch?.id || !selectedCourseId) return;
+          await save("admin/batch-course", {
+            batch_id: targetBatch.id,
+            course_id: selectedCourseId,
+          });
+        }}
+      >
+        <div className="row between wrap gap">
+          <div>
+            <h3>Attached Course for Batch ({targetBatch.name})</h3>
+            <p className="help-note">
+              Attach or change the curriculum course assigned to{" "}
+              <b>{targetBatch.name}</b>.
+            </p>
+          </div>
+          <span className={attachedCourse ? "badge green" : "badge"}>
+            {attachedCourse ? attachedCourse.title : "No course attached"}
+          </span>
+        </div>
+        <div className="row between wrap gap" style={{ alignItems: "flex-end" }}>
+          <div className="grow" style={{ minWidth: "220px" }}>
+            <Select
+              label="Course"
+              value={selectedCourseId}
+              onChange={setSelectedCourseId}
+              options={(data.courses || []).map((c) => [c.id, c.title])}
+            />
+          </div>
+          <button
+            className="button"
+            disabled={pending || !selectedCourseId}
+          >
+            Assign / Change Course
+          </button>
+        </div>
+      </form>
+
       {selectedGroup && (
         <>
-          <section className="panel">
-            <div className="row between wrap gap">
-              <h3>
-                Current Group Members — “{selectedGroup.name}” (
-                {currentMembers.length})
-              </h3>
-              <span className="badge blue">{selectedGroupBatchName}</span>
-            </div>
-            {currentMembers.length === 0 ? (
-              <p className="help-note">
-                No members assigned to “{selectedGroup.name}” yet.
-              </p>
-            ) : (
-              currentMembers.map((m) => {
-                const person = allUsers.find(
-                  (u) =>
-                    String(u.email || "").toLowerCase() ===
-                    String(m.email || "").toLowerCase(),
-                );
-                return (
-                  <div className="session-row" key={m.email}>
-                    <div className="grow">
-                      <div className="row gap wrap">
-                        <b>{person?.name || m.email}</b>
-                        {person?.role && (
-                          <span className="badge">{person.role}</span>
-                        )}
-                      </div>
-                      <p>{m.email}</p>
-                    </div>
-                    <button
-                      type="button"
-                      className="button secondary"
-                      disabled={pending}
-                      onClick={() =>
-                        save("admin/group-members", {
-                          group_id: selectedGroup.id,
-                          action: "remove",
-                          emails: [m.email],
-                        })
-                      }
-                    >
-                      Remove
-                    </button>
-                  </div>
-                );
-              })
-            )}
-          </section>
-
           <form
             className="panel form"
             onSubmit={async (e) => {
               e.preventDefault();
-              if (!selectedUserIds.length) return;
-              const payload = {
+              if (!totalToAdd) return;
+              const res = await save("admin/group-members", {
                 group_id: selectedGroup.id,
                 action: "add",
                 user_ids: selectedUserIds,
-              };
-              if (agreedFee !== "") {
-                payload.fee = Math.round(Number(agreedFee) * 100);
-              }
-              const res = await save("admin/group-members", payload);
+                new_students: quickNewStudents,
+              });
               if (res?.ok) {
                 setSelectedUserIds([]);
-                setAgreedFee("");
+                setQuickEmail("");
+                setQuickName("");
               }
             }}
           >
-            <h3>Add Existing Users to “{selectedGroup.name}”</h3>
-            <p className="help-note">
-              Adding users to this group automatically enrolls them in{" "}
-              <b>{selectedGroupBatchName}</b> and grants Google OAuth access.
-            </p>
+            <div className="row between wrap gap">
+              <div>
+                <h3>Add Students to Group — “{selectedGroup.name}”</h3>
+                <p className="help-note">
+                  Select existing students or quickly add a new student by email
+                  &amp; name. Students added here are automatically enrolled in{" "}
+                  <b>{targetBatch.name}</b>.
+                </p>
+              </div>
+              <span className="badge blue">{targetBatch.name}</span>
+            </div>
+
             <div className="row between wrap gap">
               <input
                 type="search"
                 aria-label="Search existing users to add"
-                placeholder="Search users by name or email…"
+                placeholder="Search students by name or email…"
                 value={userSearch}
                 onChange={(e) => setUserSearch(e.target.value)}
                 style={{ flex: "1 1 240px" }}
@@ -1696,6 +1692,7 @@ function GroupsMembers({
                 </button>
               </div>
             </div>
+
             <div className="row gap">
               <button
                 type="button"
@@ -1719,12 +1716,11 @@ function GroupsMembers({
 
             {rolePool.length === 0 ? (
               <p className="help-note">
-                {roleFilter === "students"
-                  ? "No student accounts exist yet. Switch to All users or create & add new students below."
-                  : "No user accounts exist yet."}
+                No student accounts exist yet. Add a new student by email &amp;
+                name below.
               </p>
             ) : filteredUsers.length === 0 ? (
-              <p className="help-note">No users match “{userSearch}”.</p>
+              <p className="help-note">No students match “{userSearch}”.</p>
             ) : (
               <div className="material-picker">
                 {filteredUsers.map((u) => {
@@ -1764,168 +1760,78 @@ function GroupsMembers({
               </div>
             )}
 
-            <Field
-              label="Agreed fee in INR (optional — leave blank for course default)"
-              type="number"
-              min="0"
-              value={agreedFee}
-              onChange={(e) => setAgreedFee(e.target.value)}
-            />
-            <button
-              className="button"
-              disabled={pending || !selectedUserIds.length}
-            >
-              Add Selected Users ({selectedUserIds.length})
-            </button>
-          </form>
-
-          <form
-            className="panel form"
-            onSubmit={async (e) => {
-              e.preventDefault();
-              if (!existingNewStudents.length) return;
-              const payload = {
-                group_id: selectedGroup.id,
-                action: "add",
-                new_students: existingNewStudents,
-              };
-              if (addStudentFee !== "") {
-                payload.fee = Math.round(Number(addStudentFee) * 100);
-              }
-              const res = await save("admin/group-members", payload);
-              if (res?.ok) {
-                setAddStudentName("");
-                setAddStudentEmail("");
-                setAddStudentPhone("");
-                setAddStudentFee("");
-                setAddInviteLines("");
-              }
-            }}
-          >
-            <h3>
-              Create &amp; Add / Invite New Student(s) to “{selectedGroup.name}”
-            </h3>
-            <p className="help-note">
-              Create a new student account inline or paste multiple emails to
-              invite and enroll them straight into <b>{selectedGroup.name}</b>.
-            </p>
             <div className="two-col">
               <Field
-                label="Full name"
-                value={addStudentName}
-                onChange={(e) => setAddStudentName(e.target.value)}
+                label="Quick Add New Student Email (optional)"
+                type="email"
+                value={quickEmail}
+                onChange={(e) => setQuickEmail(e.target.value)}
+                placeholder="student@example.com"
+              />
+              <Field
+                label="Quick Add New Student Name (optional)"
+                value={quickName}
+                onChange={(e) => setQuickName(e.target.value)}
                 placeholder="e.g., Priya Nair"
               />
-              <Field
-                label="Email"
-                type="email"
-                value={addStudentEmail}
-                onChange={(e) => setAddStudentEmail(e.target.value)}
-                placeholder="priya@example.com"
-              />
             </div>
-            <div className="two-col">
-              <Field
-                label="Phone (optional)"
-                value={addStudentPhone}
-                onChange={(e) => setAddStudentPhone(e.target.value)}
-                placeholder="+91 98765 43210"
-              />
-              <Field
-                label="Agreed fee in INR (optional)"
-                type="number"
-                min="0"
-                value={addStudentFee}
-                onChange={(e) => setAddStudentFee(e.target.value)}
-              />
-            </div>
-            <Field label="Or paste multiple emails to invite (one per line or email,name)">
-              <textarea
-                rows={3}
-                value={addInviteLines}
-                onChange={(e) => setAddInviteLines(e.target.value)}
-                placeholder={
-                  "student1@example.com,Aarav Sharma\nstudent2@example.com"
-                }
-              />
-            </Field>
-            <button
-              className="button"
-              disabled={pending || !existingNewStudents.length}
-            >
-              Create &amp; Add to Group
-              {existingNewStudents.length > 0
-                ? ` (${existingNewStudents.length})`
-                : ""}
+
+            <button className="button" disabled={pending || !totalToAdd}>
+              Add Students to Group{totalToAdd > 0 ? ` (${totalToAdd})` : ""}
             </button>
           </form>
+
+          <section className="panel">
+            <div className="row between wrap gap">
+              <h3>
+                Current Group Members — “{selectedGroup.name}” (
+                {currentMembers.length})
+              </h3>
+              <span className="badge blue">{targetBatch.name}</span>
+            </div>
+            {currentMembers.length === 0 ? (
+              <p className="help-note">
+                No students assigned to “{selectedGroup.name}” yet.
+              </p>
+            ) : (
+              currentMembers.map((m) => {
+                const person = allUsers.find(
+                  (u) =>
+                    String(u.email || "").toLowerCase() ===
+                    String(m.email || "").toLowerCase(),
+                );
+                return (
+                  <div className="session-row" key={m.email}>
+                    <div className="grow">
+                      <div className="row gap wrap">
+                        <b>{person?.name || m.email}</b>
+                        {person?.role && (
+                          <span className="badge">{person.role}</span>
+                        )}
+                      </div>
+                      <p>{m.email}</p>
+                    </div>
+                    <button
+                      type="button"
+                      className="button secondary"
+                      disabled={pending}
+                      onClick={() =>
+                        save("admin/group-members", {
+                          group_id: selectedGroup.id,
+                          action: "remove",
+                          emails: [m.email],
+                        })
+                      }
+                    >
+                      Remove
+                    </button>
+                  </div>
+                );
+              })
+            )}
+          </section>
         </>
       )}
-
-      <details className="panel">
-        <summary style={{ cursor: "pointer", fontWeight: 600 }}>
-          Bulk CSV / Multi-Line Student Onboarding ({batch.name})
-        </summary>
-        <form
-          className="form"
-          style={{ marginTop: "12px" }}
-          onSubmit={async (e) => {
-            e.preventDefault();
-            const res = await save("admin/bulk-invite", {
-              batch_id: batch.id,
-              fee: Math.round(Number(defaultFee || 0) * 100),
-              csv: csvText,
-            });
-            if (res) setCsvText("");
-          }}
-        >
-          <p>
-            Paste one student per line as <code>email,name,fee_in_paise</code>{" "}
-            or simply one email address per line. Already-registered students
-            are enrolled immediately.
-          </p>
-          <Field
-            label="Default agreed fee (major currency units, e.g. INR)"
-            type="number"
-            min="0"
-            value={defaultFee}
-            onChange={(e) => setDefaultFee(e.target.value)}
-          />
-          <Field label="Student emails or CSV rows">
-            <textarea
-              rows={5}
-              required
-              value={csvText}
-              onChange={(e) => setCsvText(e.target.value)}
-              placeholder={
-                "student1@example.com,Aarav Sharma\nstudent2@example.com,Diya Patel"
-              }
-            />
-          </Field>
-          <button className="button" disabled={pending}>
-            Bulk invite &amp; enroll students
-          </button>
-        </form>
-      </details>
-
-      <details className="panel">
-        <summary style={{ cursor: "pointer", fontWeight: 600 }}>
-          Authentication &amp; Domain Readiness
-        </summary>
-        <div style={{ marginTop: "10px" }}>
-          <p>
-            Google sign-in:{" "}
-            {features.google_ready ? "configured" : "awaiting OAuth credentials"}{" "}
-            · Mode: {features.auth_mode}
-          </p>
-          <p>
-            Custom Domain (<code>student-portal.arksglobalasia.cloud</code>)
-            &amp; Azure Static Web Apps (
-            <code>yellow-tree-0ceb4a400.3.azurestaticapps.net</code>) are
-            authorized for both Google OAuth and Staff Password Sign-in.
-          </p>
-        </div>
-      </details>
     </>
   );
 }
@@ -1933,22 +1839,16 @@ function GroupsMembers({
 function CreateGroup({
   batch,
   data,
+  features,
   save,
   pending,
+  preferredGroupId,
   onGroupCreated,
   onNavigateTab,
 }) {
   const [targetBatchId, setTargetBatchId] = useState(batch.id);
   const [newGroupName, setNewGroupName] = useState("");
   const [newGoogleGroup, setNewGoogleGroup] = useState("");
-  const [newGroupFee, setNewGroupFee] = useState("");
-  const [createSearch, setCreateSearch] = useState("");
-  const [roleFilter, setRoleFilter] = useState("students");
-  const [createUserIds, setCreateUserIds] = useState([]);
-  const [createStudentName, setCreateStudentName] = useState("");
-  const [createStudentEmail, setCreateStudentEmail] = useState("");
-  const [createStudentPhone, setCreateStudentPhone] = useState("");
-  const [createInviteLines, setCreateInviteLines] = useState("");
 
   useEffect(() => {
     setTargetBatchId(batch.id);
@@ -1957,250 +1857,396 @@ function CreateGroup({
   const targetBatch =
     data.batches.find((b) => b.id === targetBatchId) || batch;
 
-  const allUsers = data.users || [];
-  const rolePool =
-    roleFilter === "students"
-      ? allUsers.filter((u) => u.role === "student")
-      : allUsers;
+  const allGroups = features?.groups || [];
+  const batchGroups = allGroups.filter((g) => g.batch_id === targetBatch.id);
 
-  const cq = createSearch.trim().toLowerCase();
-  const filteredCreateUsers = rolePool.filter(
+  const [selectedGroupId, setSelectedGroupId] = useState(() => {
+    if (
+      preferredGroupId &&
+      batchGroups.some((g) => g.id === preferredGroupId)
+    ) {
+      return preferredGroupId;
+    }
+    return batchGroups[0]?.id || "";
+  });
+
+  useEffect(() => {
+    if (
+      preferredGroupId &&
+      batchGroups.some((g) => g.id === preferredGroupId)
+    ) {
+      setSelectedGroupId(preferredGroupId);
+      return;
+    }
+    if (
+      !selectedGroupId ||
+      !batchGroups.some((g) => g.id === selectedGroupId)
+    ) {
+      setSelectedGroupId(batchGroups[0]?.id || "");
+    }
+  }, [targetBatch.id, batchGroups.length, preferredGroupId]);
+
+  const selectedGroup =
+    batchGroups.find((g) => g.id === selectedGroupId) || null;
+  const currentMembers = selectedGroup
+    ? (features?.members || []).filter((m) => m.group_id === selectedGroup.id)
+    : [];
+  const memberEmailSet = new Set(
+    currentMembers.map((m) => String(m.email || "").toLowerCase()),
+  );
+
+  // Panel 2 — Add Students to Group state
+  const [studentSearch, setStudentSearch] = useState("");
+  const [selectedUserIds, setSelectedUserIds] = useState([]);
+  const [quickEmail, setQuickEmail] = useState("");
+  const [quickName, setQuickName] = useState("");
+
+  const allUsers = data.users || [];
+  const studentUsers = allUsers.filter((u) => u.role === "student");
+  const sq = studentSearch.trim().toLowerCase();
+  const filteredStudents = studentUsers.filter(
     (u) =>
-      !cq ||
+      !sq ||
       String(u.name || "")
         .toLowerCase()
-        .includes(cq) ||
+        .includes(sq) ||
       String(u.email || "")
         .toLowerCase()
-        .includes(cq),
+        .includes(sq),
+  );
+  const availableStudents = filteredStudents.filter(
+    (u) => !memberEmailSet.has(String(u.email || "").toLowerCase()),
   );
 
-  const createNewStudents = buildNewStudentsPayload(
-    createStudentName,
-    createStudentEmail,
-    createStudentPhone,
-    createInviteLines,
+  const quickNewStudents = buildNewStudentsPayload(
+    quickName,
+    quickEmail,
+    "",
+    "",
   );
+  const totalStudentsToAdd = selectedUserIds.length + quickNewStudents.length;
+
+  // Panel 3 — Assign Course to Batch state
+  const attachedCourse = (data.courses || []).find(
+    (c) => c.id === targetBatch.course_id,
+  );
+  const [courseId, setCourseId] = useState(
+    () => targetBatch.course_id || data.courses?.[0]?.id || "",
+  );
+  useEffect(() => {
+    setCourseId(targetBatch.course_id || data.courses?.[0]?.id || "");
+  }, [targetBatch.id, targetBatch.course_id, data.courses?.length]);
+
+  function memberCountFor(gId) {
+    return (features?.members || []).filter((m) => m.group_id === gId).length;
+  }
 
   return (
-    <form
-      className="panel form"
-      onSubmit={async (e) => {
-        e.preventDefault();
-        if (!newGroupName.trim()) return;
-        const payload = {
-          batch_id: targetBatchId,
-          name: newGroupName.trim(),
-          google_group: newGoogleGroup.trim(),
-          user_ids: createUserIds,
-          new_students: createNewStudents,
-          members: "",
-        };
-        if (newGroupFee !== "") {
-          payload.fee = Math.round(Number(newGroupFee) * 100);
-        }
-        const res = await save("admin/group", payload);
-        if (res?.id) {
-          setNewGroupName("");
-          setNewGoogleGroup("");
-          setNewGroupFee("");
-          setCreateUserIds([]);
-          setCreateStudentName("");
-          setCreateStudentEmail("");
-          setCreateStudentPhone("");
-          setCreateInviteLines("");
-          setCreateSearch("");
-          if (onGroupCreated) onGroupCreated(res.id);
-          else onNavigateTab?.("access");
-        }
-      }}
-    >
-      <div className="row between wrap gap">
-        <div>
-          <h3>Create New Batch Group</h3>
-          <p className="help-note">
-            Create a dedicated Batch Group, optionally add existing users, and
-            create or invite new students in one step.
-          </p>
-        </div>
-        {onNavigateTab && (
-          <button
-            type="button"
-            className="button secondary"
-            onClick={() => onNavigateTab("access")}
-          >
-            View Groups &amp; Members
-          </button>
-        )}
-      </div>
-
-      <Select
-        label="Batch"
-        value={targetBatchId}
-        onChange={setTargetBatchId}
-        options={data.batches.map((b) => [b.id, b.name])}
-      />
-
-      <div className="two-col">
-        <Field
-          label="Group Name"
-          value={newGroupName}
-          onChange={(e) => setNewGroupName(e.target.value)}
-          placeholder={`e.g., ${targetBatch.name} — Cohort A`}
-          required
-        />
-        <Field
-          label="Google Group Email (optional)"
-          type="email"
-          value={newGoogleGroup}
-          onChange={(e) => setNewGoogleGroup(e.target.value)}
-          placeholder="batch-group@arksglobalasia.cloud"
-        />
-      </div>
-
-      <Field
-        label="Default Agreed Fee in INR (optional — leave blank for course default)"
-        type="number"
-        min="0"
-        value={newGroupFee}
-        onChange={(e) => setNewGroupFee(e.target.value)}
-      />
-
-      <div className="builder">
-        <h4>Add Existing Users (Optional)</h4>
+    <>
+      {/* Panel 1 — Create Group (Group Details Only) */}
+      <form
+        className="panel form"
+        onSubmit={async (e) => {
+          e.preventDefault();
+          if (!newGroupName.trim()) return;
+          const res = await save("admin/group", {
+            batch_id: targetBatchId,
+            name: newGroupName.trim(),
+            google_group: newGoogleGroup.trim(),
+          });
+          if (res?.id) {
+            setNewGroupName("");
+            setNewGoogleGroup("");
+            setSelectedGroupId(res.id);
+            setSelectedUserIds([]);
+            onGroupCreated?.(res.id);
+          }
+        }}
+      >
         <div className="row between wrap gap">
-          <input
-            type="search"
-            aria-label="Search existing users for new group"
-            placeholder="Search users by name or email…"
-            value={createSearch}
-            onChange={(e) => setCreateSearch(e.target.value)}
-            style={{ flex: "1 1 240px" }}
-          />
-          <div
-            className="row gap wrap"
-            role="group"
-            aria-label="Filter users for new group by role"
-          >
+          <div>
+            <h3>1. Create Group</h3>
+            <p className="help-note">
+              Step 1: Create an empty group for your batch first, then add
+              students and assign a course below.
+            </p>
+          </div>
+          {onNavigateTab && (
             <button
               type="button"
-              className={
-                roleFilter === "students" ? "button" : "button secondary"
-              }
-              onClick={() => setRoleFilter("students")}
+              className="button secondary"
+              onClick={() => onNavigateTab("access")}
             >
-              Students only
+              View Groups &amp; Members
             </button>
-            <button
-              type="button"
-              className={roleFilter === "all" ? "button" : "button secondary"}
-              onClick={() => setRoleFilter("all")}
-            >
-              All users (incl. Trainers &amp; Admins)
-            </button>
-          </div>
+          )}
         </div>
-        <div className="row gap">
-          <button
-            type="button"
-            className="text-btn"
-            disabled={!filteredCreateUsers.length}
-            onClick={() =>
-              setCreateUserIds(filteredCreateUsers.map((u) => u.id))
-            }
-          >
-            Select all ({filteredCreateUsers.length})
-          </button>
-          <button
-            type="button"
-            className="text-btn"
-            disabled={!createUserIds.length}
-            onClick={() => setCreateUserIds([])}
-          >
-            Clear
-          </button>
-        </div>
-        {rolePool.length === 0 ? (
-          <p className="help-note">
-            {roleFilter === "students"
-              ? "No existing student accounts yet. Switch to All users or create & invite new students below."
-              : "No existing user accounts yet."}
-          </p>
-        ) : filteredCreateUsers.length === 0 ? (
-          <p className="help-note">No users match “{createSearch}”.</p>
-        ) : (
-          <div className="material-picker">
-            {filteredCreateUsers.map((u) => {
-              const checked = createUserIds.includes(u.id);
-              return (
-                <label className="row between gap" key={u.id}>
-                  <span className="row gap">
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      onChange={(e) =>
-                        setCreateUserIds((prev) =>
-                          e.target.checked
-                            ? [...prev, u.id]
-                            : prev.filter((id) => id !== u.id),
-                        )
-                      }
-                    />
-                    <span>
-                      <b>{u.name}</b> · <small>{u.email}</small>
-                      {roleFilter === "all" && u.role !== "student" && (
-                        <>
-                          {" "}
-                          <span className="badge">{u.role}</span>
-                        </>
-                      )}
-                    </span>
-                  </span>
-                </label>
-              );
-            })}
-          </div>
-        )}
-      </div>
 
-      <div className="builder">
-        <h4>Create / Invite New Students (Optional)</h4>
+        <Select
+          label="Batch"
+          value={targetBatchId}
+          onChange={(nextBatchId) => {
+            setTargetBatchId(nextBatchId);
+            setSelectedUserIds([]);
+          }}
+          options={data.batches.map((b) => [b.id, b.name])}
+        />
+
         <div className="two-col">
           <Field
-            label="Full name (optional)"
-            value={createStudentName}
-            onChange={(e) => setCreateStudentName(e.target.value)}
-            placeholder="e.g., Kabir Verma"
+            label="Group Name"
+            value={newGroupName}
+            onChange={(e) => setNewGroupName(e.target.value)}
+            placeholder="e.g., DevOps Morning Group A"
+            required
           />
           <Field
-            label="Email (optional)"
+            label="Google Group Email (optional)"
             type="email"
-            value={createStudentEmail}
-            onChange={(e) => setCreateStudentEmail(e.target.value)}
-            placeholder="kabir@example.com"
+            value={newGoogleGroup}
+            onChange={(e) => setNewGoogleGroup(e.target.value)}
+            placeholder="batch-group@arksglobalasia.cloud"
           />
         </div>
-        <Field
-          label="Phone (optional)"
-          value={createStudentPhone}
-          onChange={(e) => setCreateStudentPhone(e.target.value)}
-          placeholder="+91 98765 43210"
-        />
-        <Field label="Multiple students to invite / create (email or email,name per line)">
-          <textarea
-            rows={4}
-            value={createInviteLines}
-            onChange={(e) => setCreateInviteLines(e.target.value)}
-            placeholder={
-              "student1@example.com,Aarav Sharma\nstudent2@example.com,Diya Patel"
-            }
-          />
-        </Field>
-      </div>
 
-      <button className="button" disabled={pending || !newGroupName.trim()}>
-        Create Group
-      </button>
-    </form>
+        <button className="button" disabled={pending || !newGroupName.trim()}>
+          Create Group
+        </button>
+      </form>
+
+      {/* Panel 2 — Add Students to Group */}
+      <section className="panel form">
+        <div className="row between wrap gap">
+          <div>
+            <h3>2. Add Students to Group</h3>
+            <p className="help-note">
+              Step 2: Select your group and add students to it.
+            </p>
+          </div>
+          <span className="badge blue">{targetBatch.name}</span>
+        </div>
+
+        {batchGroups.length === 0 ? (
+          <p className="help-note">
+            Create a group above first to add students.
+          </p>
+        ) : (
+          <>
+            <Select
+              label="Select Group"
+              value={selectedGroupId}
+              onChange={(nextId) => {
+                setSelectedGroupId(nextId);
+                setSelectedUserIds([]);
+              }}
+              options={batchGroups.map((g) => {
+                const count = memberCountFor(g.id);
+                return [
+                  g.id,
+                  `${g.name} (${count} ${count === 1 ? "student" : "students"})`,
+                ];
+              })}
+            />
+
+            {selectedGroup && (
+              <>
+                <form
+                  className="form"
+                  onSubmit={async (e) => {
+                    e.preventDefault();
+                    if (!totalStudentsToAdd) return;
+                    const res = await save("admin/group-members", {
+                      group_id: selectedGroup.id,
+                      action: "add",
+                      user_ids: selectedUserIds,
+                      new_students: quickNewStudents,
+                    });
+                    if (res?.ok) {
+                      setSelectedUserIds([]);
+                      setQuickEmail("");
+                      setQuickName("");
+                    }
+                  }}
+                >
+                  <div className="row between wrap gap">
+                    <input
+                      type="search"
+                      aria-label="Search students to add to group"
+                      placeholder="Search existing students by name or email…"
+                      value={studentSearch}
+                      onChange={(e) => setStudentSearch(e.target.value)}
+                      style={{ flex: "1 1 240px" }}
+                    />
+                    <div className="row gap">
+                      <button
+                        type="button"
+                        className="text-btn"
+                        disabled={!availableStudents.length}
+                        onClick={() =>
+                          setSelectedUserIds(availableStudents.map((u) => u.id))
+                        }
+                      >
+                        Select all available ({availableStudents.length})
+                      </button>
+                      <button
+                        type="button"
+                        className="text-btn"
+                        disabled={!selectedUserIds.length}
+                        onClick={() => setSelectedUserIds([])}
+                      >
+                        Clear
+                      </button>
+                    </div>
+                  </div>
+
+                  {studentUsers.length === 0 ? (
+                    <p className="help-note">
+                      No existing student accounts yet. Use the quick email
+                      &amp; name fields below to add new students.
+                    </p>
+                  ) : filteredStudents.length === 0 ? (
+                    <p className="help-note">
+                      No students match “{studentSearch}”.
+                    </p>
+                  ) : (
+                    <div className="material-picker">
+                      {filteredStudents.map((u) => {
+                        const inGroup = memberEmailSet.has(
+                          String(u.email || "").toLowerCase(),
+                        );
+                        const checked =
+                          inGroup || selectedUserIds.includes(u.id);
+                        return (
+                          <label className="row between gap" key={u.id}>
+                            <span className="row gap">
+                              <input
+                                type="checkbox"
+                                disabled={inGroup}
+                                checked={checked}
+                                onChange={(e) =>
+                                  setSelectedUserIds((prev) =>
+                                    e.target.checked
+                                      ? [...prev, u.id]
+                                      : prev.filter((id) => id !== u.id),
+                                  )
+                                }
+                              />
+                              <span>
+                                <b>{u.name}</b> · <small>{u.email}</small>
+                              </span>
+                            </span>
+                            {inGroup && (
+                              <span className="badge green">In group</span>
+                            )}
+                          </label>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  <div className="two-col">
+                    <Field
+                      label="Add New Student Email (optional)"
+                      type="email"
+                      value={quickEmail}
+                      onChange={(e) => setQuickEmail(e.target.value)}
+                      placeholder="student@example.com"
+                    />
+                    <Field
+                      label="Add New Student Name (optional)"
+                      value={quickName}
+                      onChange={(e) => setQuickName(e.target.value)}
+                      placeholder="e.g., Kabir Verma"
+                    />
+                  </div>
+
+                  <button
+                    className="button"
+                    disabled={pending || !totalStudentsToAdd}
+                  >
+                    Add Students to Group
+                    {totalStudentsToAdd > 0 ? ` (${totalStudentsToAdd})` : ""}
+                  </button>
+                </form>
+
+                {currentMembers.length > 0 && (
+                  <div className="builder">
+                    <h4>
+                      Students in “{selectedGroup.name}” ({currentMembers.length}
+                      )
+                    </h4>
+                    {currentMembers.map((m) => {
+                      const person = allUsers.find(
+                        (u) =>
+                          String(u.email || "").toLowerCase() ===
+                          String(m.email || "").toLowerCase(),
+                      );
+                      return (
+                        <div className="session-row" key={m.email}>
+                          <div className="grow">
+                            <b>{person?.name || m.email}</b>
+                            <p>{m.email}</p>
+                          </div>
+                          <button
+                            type="button"
+                            className="button secondary"
+                            disabled={pending}
+                            onClick={() =>
+                              save("admin/group-members", {
+                                group_id: selectedGroup.id,
+                                action: "remove",
+                                emails: [m.email],
+                              })
+                            }
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </>
+            )}
+          </>
+        )}
+      </section>
+
+      {/* Panel 3 — Assign Course to Batch */}
+      <form
+        className="panel form"
+        onSubmit={async (e) => {
+          e.preventDefault();
+          if (!targetBatch.id || !courseId) return;
+          await save("admin/batch-course", {
+            batch_id: targetBatch.id,
+            course_id: courseId,
+          });
+        }}
+      >
+        <div className="row between wrap gap">
+          <div>
+            <h3>3. Assign Course to Batch</h3>
+            <p className="help-note">
+              Step 3: Attach or update the course for <b>{targetBatch.name}</b>.
+            </p>
+          </div>
+          <span className={attachedCourse ? "badge green" : "badge"}>
+            {attachedCourse ? attachedCourse.title : "No course attached"}
+          </span>
+        </div>
+
+        <Select
+          label="Course"
+          value={courseId}
+          onChange={setCourseId}
+          options={(data.courses || []).map((c) => [c.id, c.title])}
+        />
+
+        <button className="button" disabled={pending || !courseId}>
+          Assign Course to Batch
+        </button>
+      </form>
+    </>
   );
 }

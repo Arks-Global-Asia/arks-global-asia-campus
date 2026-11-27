@@ -1404,3 +1404,83 @@ test("POST /api/admin/group creates a new group with existing user_ids, new_stud
   ).first();
   assert.ok(invInvited, "Expected invitation row for invited.only@arks.test");
 });
+
+test("POST /api/admin/batch-course and /api/admin/save on batches allow assigning or changing a batch course at any time", async () => {
+  const { env, call } = await campus();
+
+  // Create a second course
+  const c2 = await call(owner, "admin/save", {
+    entity: "courses",
+    values: {
+      title: "Azure Cloud Engineering & Kubernetes",
+      description: "Production AKS and Azure DevOps.",
+      fee: 450000,
+      currency: "INR",
+      syllabus: JSON.stringify([
+        { title: "Azure Foundations", detail: "VNets, IAM, and ARM/Bicep" },
+      ]),
+    },
+  });
+  assert.equal(c2.status, 200);
+  const newCourseId = c2.data.id;
+
+  // Assign new course via POST /api/admin/batch-course
+  const assignRes = await call(owner, "admin/batch-course", {
+    batch_id: "sandbox",
+    course_id: newCourseId,
+  });
+  assert.equal(assignRes.status, 200);
+  assert.equal(assignRes.data.ok, true);
+  assert.equal(assignRes.data.batch_id, "sandbox");
+  assert.equal(assignRes.data.course_id, newCourseId);
+  assert.equal(assignRes.data.message, "Course assigned to batch.");
+
+  const batchRow1 = await env.DB.prepare(
+    "SELECT course_id FROM batches WHERE id='sandbox'",
+  ).first();
+  assert.equal(batchRow1.course_id, newCourseId);
+
+  const auditRow = await env.DB.prepare(
+    "SELECT * FROM audit WHERE action='assign_course:batch' AND entity='sandbox'",
+  ).first();
+  assert.ok(auditRow, "Expected assign_course:batch audit log entry");
+
+  // Invalid batch or course returns 400
+  const invalidRes = await call(owner, "admin/batch-course", {
+    batch_id: "sandbox",
+    course_id: "non-existent-course",
+  });
+  assert.equal(invalidRes.status, 400);
+  assert.equal(invalidRes.data.error, "Choose a valid batch and course.");
+
+  // Student is blocked (403)
+  assert.equal(
+    (
+      await call(student, "admin/batch-course", {
+        batch_id: "sandbox",
+        course_id: "devops",
+      })
+    ).status,
+    403,
+  );
+
+  // Also verify /api/admin/save on batches allows changing course_id back to devops
+  const saveBatchRes = await call(owner, "admin/save", {
+    entity: "batches",
+    values: {
+      id: "sandbox",
+      course_id: "devops",
+      name: "DevOps Foundations — Active Cohort",
+      start_date: "2026-11-01",
+      end_date: "2027-02-01",
+      timezone: "Asia/Kolkata",
+      covered: 2,
+      status: "active",
+    },
+  });
+  assert.equal(saveBatchRes.status, 200);
+  const batchRow2 = await env.DB.prepare(
+    "SELECT course_id FROM batches WHERE id='sandbox'",
+  ).first();
+  assert.equal(batchRow2.course_id, "devops");
+});

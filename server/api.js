@@ -928,13 +928,6 @@ async function adminApi(req, db, u, p) {
         v.end_date < v.start_date
       )
         fail(400, "Choose valid batch dates.");
-      const old = await one(
-        db,
-        "SELECT course_id FROM batches WHERE id=?",
-        key,
-      );
-      if (old && old.course_id !== v.course_id)
-        fail(400, "Create a new batch to change the course.");
       fields = {
         course_id: v.course_id,
         name: required(v.name, "Name"),
